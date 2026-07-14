@@ -316,22 +316,20 @@ function LocalMatchCard({
   const result = fixture.regularTimeScore;
   const afterExtraTime = fixture.afterExtraTimeScore;
   const penalties = fixture.penaltyShootoutScore;
-  const decidingScore = penalties ?? afterExtraTime;
+  const displayScore = afterExtraTime ?? result;
   const winner = fixture.winnerSide
     ? fixture.winnerSide === "home"
       ? fixture.homeTeam
       : fixture.awayTeam
     : null;
-  const scoreNote = result
+  const scoreNote = displayScore
     ? penalties
-      ? `${afterExtraTime ? `加时后 ${afterExtraTime.home}:${afterExtraTime.away} · ` : ""}点球 ${penalties.home}:${penalties.away}${winner ? ` · ${winner.name}晋级` : ""}`
-      : afterExtraTime
-        ? `加时后 ${afterExtraTime.home}:${afterExtraTime.away}${winner ? ` · ${winner.name}晋级` : ""}`
-        : result.home === result.away && winner
-          ? `90分钟平局 · ${winner.name}晋级`
-      : result.home === result.away
-        ? "90分钟已结算 · 等待最终胜者"
-        : "90分钟比分 · 本地记录"
+      ? `点球 ${penalties.home}:${penalties.away}`
+      : winner
+        ? `${winner.name}晋级`
+        : result?.home === result?.away
+          ? "90分钟已结算 · 等待最终胜者"
+          : "90分钟比分 · 本地记录"
     : mode === "upcoming-tbd"
       ? "等待前场赛果确定对阵"
       : mode === "upcoming-confirmed"
@@ -344,23 +342,30 @@ function LocalMatchCard({
     <div className="wb-matchup" data-local-result={mode === "completed" || undefined}>
       <div className="wb-team wb-team-home">
         <Flag code={fixture.homeTeam.code} label={fixture.homeTeam.name} />
+        {fixture.winnerSide === "home" && (
+          <span className="wb-win-badge" aria-label={`${fixture.homeTeam.name}获胜`}>
+            WIN
+          </span>
+        )}
         <b>{fixture.homeTeam.name}</b>
       </div>
       <div className="wb-score">
         <strong
-          aria-label={result
-            ? `90分钟${result.home}比${result.away}${penalties ? `，点球大战${penalties.home}比${penalties.away}` : afterExtraTime ? `，加时后${afterExtraTime.home}比${afterExtraTime.away}` : ""}`
+          aria-label={displayScore
+            ? `${afterExtraTime ? "最终比分" : "90分钟比分"}${displayScore.home}比${displayScore.away}`
             : "比分待定"}
         >
-          {result ? `${result.home} : ${result.away}` : "— : —"}
-          {result && decidingScore && (
-            <small>（{decidingScore.home}:{decidingScore.away}）</small>
-          )}
+          {displayScore ? `${displayScore.home} : ${displayScore.away}` : "— : —"}
         </strong>
-        <span>{scoreNote}</span>
+        <span className={penalties ? "wb-shootout-score" : undefined}>{scoreNote}</span>
       </div>
       <div className="wb-team wb-team-away">
         <Flag code={fixture.awayTeam.code} label={fixture.awayTeam.name} />
+        {fixture.winnerSide === "away" && (
+          <span className="wb-win-badge" aria-label={`${fixture.awayTeam.name}获胜`}>
+            WIN
+          </span>
+        )}
         <b>{fixture.awayTeam.name}</b>
       </div>
     </div>

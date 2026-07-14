@@ -303,7 +303,7 @@ test("manual knockout entry opens at T+3 and derives the winner from dynamic sco
   assert.doesNotMatch(manualRoute, /payload\.winnerSide/);
 });
 
-test("local result cards show extra time and bracketed shoot-out scores", async () => {
+test("local result cards show the final on-field score and one shoot-out detail", async () => {
   const workbench = await readFile(
     new URL("../app/components/PoolWorkbench.tsx", import.meta.url),
     "utf8",
@@ -315,17 +315,39 @@ test("local result cards show extra time and bracketed shoot-out scores", async 
   assert.ok(localCardStart >= 0 && localCardEnd > localCardStart);
   assert.match(localCard, /fixture\.afterExtraTimeScore/);
   assert.match(localCard, /fixture\.penaltyShootoutScore/);
-  assert.match(localCard, /加时/);
   assert.match(
     localCard,
-    /const decidingScore\s*=\s*penalties\s*\?\?\s*afterExtraTime/,
-    "shoot-out score should take precedence over the extra-time score",
+    /const displayScore\s*=\s*afterExtraTime\s*\?\?\s*result/,
+    "the cumulative extra-time score should take precedence as the main score",
   );
   assert.match(
     localCard,
-    /<small>（\{decidingScore\.home\}\s*:\s*\{decidingScore\.away\}）<\/small>/,
-    "the deciding score should be visually subordinate in parentheses",
+    /\{displayScore \? `\$\{displayScore\.home\} : \$\{displayScore\.away\}` : "— : —"\}/,
+    "the final on-field score should be rendered as the large score",
   );
+  assert.match(
+    localCard,
+    /\? `点球 \$\{penalties\.home\}:\$\{penalties\.away\}`\s*:\s*winner/,
+    "the shoot-out line should contain only the shoot-out score",
+  );
+  assert.match(localCard, /className=\{penalties \? "wb-shootout-score" : undefined\}/);
+  assert.match(localCard, /fixture\.winnerSide === "home"[\s\S]*?wb-win-badge[\s\S]*?WIN/);
+  assert.match(localCard, /fixture\.winnerSide === "away"[\s\S]*?wb-win-badge[\s\S]*?WIN/);
+  assert.doesNotMatch(localCard, /decidingScore|<small>/);
+
+  const primaryScoreStart = localCard.indexOf("<strong");
+  const primaryScoreEnd = localCard.indexOf("</strong>", primaryScoreStart);
+  const primaryScore = localCard.slice(primaryScoreStart, primaryScoreEnd);
+  assert.ok(primaryScoreStart >= 0 && primaryScoreEnd > primaryScoreStart);
+  assert.doesNotMatch(primaryScore, /penalties|点球|<small>/);
+
+  const tickerStart = workbench.indexOf("const knockoutResolution =");
+  const tickerEnd = workbench.indexOf("return (", tickerStart);
+  const resultTicker = workbench.slice(tickerStart, tickerEnd);
+  assert.ok(tickerStart >= 0 && tickerEnd > tickerStart);
+  assert.match(resultTicker, /90分钟赛果/);
+  assert.match(resultTicker, /加时后/);
+  assert.match(resultTicker, /点球/);
 });
 
 test("backend settlement grades money only from half-time and 90-minute scores", async () => {

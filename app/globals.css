@@ -541,6 +541,23 @@ api-sports-widget[data-theme="WorldCup"] {
   white-space: nowrap;
 }
 
+.wb-win-badge {
+  display: inline-grid;
+  min-width: 24px;
+  height: 16px;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0 4px;
+  border: 1px solid oklch(0.93 0.13 89 / 0.72);
+  border-radius: 999px;
+  background: var(--gold);
+  color: var(--pitch-deep);
+  font-size: 7px;
+  font-weight: 950;
+  letter-spacing: 0.04em;
+  line-height: 1;
+}
+
 .wb-flag {
   position: relative;
   display: block;
@@ -614,21 +631,19 @@ api-sports-widget[data-theme="WorldCup"] {
   font-variant-numeric: tabular-nums;
 }
 
-.wb-score strong small {
-  display: inline;
-  margin-left: 2px;
-  font-size: 0.58em;
-  font-weight: 900;
-  letter-spacing: -0.06em;
-  white-space: nowrap;
-}
-
 .wb-score span {
   display: block;
   margin-top: 5px;
   color: oklch(0.76 0.022 151);
   font-size: 8px;
   font-weight: 750;
+}
+
+.wb-score span.wb-shootout-score {
+  color: oklch(0.94 0.08 91);
+  font-size: 10px;
+  font-weight: 900;
+  white-space: nowrap;
 }
 
 .wb-match-stats {
