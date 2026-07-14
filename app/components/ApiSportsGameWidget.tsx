@@ -128,11 +128,13 @@ export function ApiSportsGameWidget({
   fixtureId,
   kickoffAt,
   currentTime,
+  settled,
   fallback,
 }: {
   fixtureId: string | null;
   kickoffAt: string;
   currentTime: string;
+  settled: boolean;
   fallback: ReactNode;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -145,6 +147,7 @@ export function ApiSportsGameWidget({
   const [clockMs, setClockMs] = useState(() => Date.parse(currentTime));
   const kickoffMs = Date.parse(kickoffAt);
   const liveRefresh =
+    !settled &&
     Number.isFinite(kickoffMs) &&
     clockMs >= kickoffMs &&
     clockMs < kickoffMs + 3 * 60 * 60 * 1_000;

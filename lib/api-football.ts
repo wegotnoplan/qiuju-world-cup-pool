@@ -161,6 +161,44 @@ function fixtureStatusesFromEnvelope(envelope: ApiFootballEnvelope): string[] {
   });
 }
 
+function envelopeHasCompleteFulltimeScores(envelope: ApiFootballEnvelope): boolean {
+  return (
+    Array.isArray(envelope.response) &&
+    envelope.response.length > 0 &&
+    envelope.response.every((item) => {
+      const fulltime = (item as ApiFootballFixturePayload | undefined)?.score?.fulltime;
+      return Number.isInteger(fulltime?.home) && Number.isInteger(fulltime?.away);
+    })
+  );
+}
+
+function scheduledFixtureTtlSeconds(envelope: ApiFootballEnvelope): number | null {
+  if (!Array.isArray(envelope.response)) return null;
+  const nowMs = Date.now();
+  const nearbyKickoffDeltas = envelope.response.flatMap((item) => {
+    const fixture = (item as ApiFootballFixturePayload | undefined)?.fixture;
+    const status =
+      typeof fixture?.status?.short === "string"
+        ? fixture.status.short.toUpperCase()
+        : "";
+    const kickoffMs =
+      typeof fixture?.date === "string" ? Date.parse(fixture.date) : Number.NaN;
+    if (!new Set(["NS", "TBD"]).has(status) || !Number.isFinite(kickoffMs)) {
+      return [];
+    }
+    const deltaMs = kickoffMs - nowMs;
+    return deltaMs <= 30 * 60 * 1_000 && deltaMs >= -4 * 60 * 60 * 1_000
+      ? [deltaMs]
+      : [];
+  });
+  if (nearbyKickoffDeltas.length === 0) return null;
+
+  // Expire a pre-match response at kickoff. If the provider still reports NS
+  // just after kickoff, retry quickly instead of serving that snapshot for 30m.
+  const nearestDeltaMs = Math.min(...nearbyKickoffDeltas);
+  return Math.max(30, Math.ceil(nearestDeltaMs / 1_000));
+}
+
 function effectiveTtlSeconds(
   endpoint: ApiFootballEndpoint,
   envelope: ApiFootballEnvelope,
@@ -179,9 +217,16 @@ function effectiveTtlSeconds(
     // one request per viewer.
     return 175;
   }
-  if (statuses.length > 0 && statuses.every((status) => terminal.has(status))) {
+  if (
+    statuses.length > 0 &&
+    statuses.every((status) => terminal.has(status)) &&
+    envelopeHasCompleteFulltimeScores(envelope)
+  ) {
     return 24 * 60 * 60;
   }
+  if (statuses.some((status) => terminal.has(status))) return 30;
+  const scheduledTtl = scheduledFixtureTtlSeconds(envelope);
+  if (scheduledTtl !== null) return scheduledTtl;
   return Math.max(DEFAULT_CACHE_TTL_SECONDS, 30 * 60);
 }
 

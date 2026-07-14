@@ -81,7 +81,20 @@ test("rejects impossible half-time and 90-minute score combinations", () => {
   );
 });
 
-test("API-Football AET and PEN results settle strictly from score.fulltime", () => {
+test("API-Football ET, AET and PEN results settle strictly from score.fulltime", () => {
+  const enteringExtraTime = normalizeApiFootballFixture({
+    fixture: { status: { short: "ET" } },
+    goals: { home: 1, away: 1 },
+    score: {
+      halftime: { home: 1, away: 0 },
+      fulltime: { home: 1, away: 1 },
+      extratime: { home: 0, away: 0 },
+      penalty: { home: null, away: null },
+    },
+  });
+  assert.equal(enteringExtraTime.outcome, "ready");
+  assert.deepEqual(enteringExtraTime.regularTime, { home: 1, away: 1 });
+
   const afterExtraTime = normalizeApiFootballFixture({
     fixture: { status: { short: "AET" } },
     goals: { home: 3, away: 2 },
@@ -109,13 +122,30 @@ test("API-Football AET and PEN results settle strictly from score.fulltime", () 
   assert.deepEqual(afterPenalties.regularTime, { home: 0, away: 0 });
 });
 
-test("API-Football does not settle before an explicit completed status", () => {
+test("API-Football stores halftime but does not settle during regulation play", () => {
   const live = normalizeApiFootballFixture({
     fixture: { status: { short: "2H" } },
-    score: { fulltime: { home: 2, away: 1 } },
+    score: {
+      halftime: { home: 1, away: 0 },
+      fulltime: { home: 2, away: 1 },
+    },
   });
   assert.equal(live.outcome, "waiting");
+  assert.deepEqual(live.halfTime, { home: 1, away: 0 });
   assert.equal(live.regularTime, null);
+});
+
+test("API-Football waits instead of requesting review while fulltime data is publishing", () => {
+  const enteringExtraTime = normalizeApiFootballFixture({
+    fixture: { status: { short: "ET" } },
+    score: {
+      halftime: { home: 0, away: 1 },
+      fulltime: { home: null, away: null },
+    },
+  });
+  assert.equal(enteringExtraTime.outcome, "waiting");
+  assert.deepEqual(enteringExtraTime.halfTime, { home: 0, away: 1 });
+  assert.equal(enteringExtraTime.regularTime, null);
 });
 
 test("keeps later fixtures locked until the prior fixture settles", () => {

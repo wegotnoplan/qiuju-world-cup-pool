@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -59,9 +60,24 @@ const HALF_FULL_ORDER = [
   "DRAW_HOME", "DRAW_DRAW", "DRAW_AWAY",
   "AWAY_HOME", "AWAY_DRAW", "AWAY_AWAY",
 ];
+const LIVE_SYNC_INTERVAL_MS = 180_000;
+const LIVE_SYNC_CLOCK_MS = 30_000;
 
 function unwrapState(payload: unknown): AppState {
   return (payload as { state?: AppState }).state ?? (payload as AppState);
+}
+
+function fixtureInLiveSyncWindow(state: AppState, nowMs: number): Fixture | null {
+  return (
+    [...state.fixtures]
+      .sort((a, b) => a.sequence - b.sequence)
+      .find(
+        (fixture) =>
+          fixture.recordStatus === "scheduled" &&
+          nowMs >= Date.parse(fixture.kickoffAt) &&
+          nowMs <= Date.parse(fixture.resultSyncDueAt),
+      ) ?? null
+  );
 }
 
 function money(cents: number): string {
@@ -234,6 +250,10 @@ export function PoolWorkbench() {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const didInitialScroll = useRef(false);
   const scrollFrame = useRef<number | null>(null);
+  const stateRef = useRef(state);
+  const syncInFlightRef = useRef(false);
+  const lastResultSyncAtRef = useRef(0);
+  const liveSyncFixtureIdRef = useRef<string | null>(null);
 
   const fixtures = useMemo(() => [...state.fixtures].sort((a, b) => a.sequence - b.sequence), [state.fixtures]);
   const selectedFixture = fixtures.find((fixture) => fixture.id === selectedFixtureId) ?? fixtures[0] ?? null;
@@ -294,17 +314,25 @@ export function PoolWorkbench() {
   const pickerFixture = selectedFixture;
   const pickerGroups = useMemo(() => groupedOffers(pickerFixture?.offers ?? []), [pickerFixture]);
 
-  async function refreshState(): Promise<AppState> {
+  const refreshState = useCallback(async (): Promise<AppState> => {
     const response = await fetch("/api/state", { cache: "no-store" });
     if (!response.ok) throw new Error(await responseError(response));
     const next = unwrapState(await response.json());
+    stateRef.current = next;
     setState(next);
     setSelectedFixtureId((current) => current ?? next.activeFixtureId ?? next.fixtures[0]?.id ?? null);
     return next;
-  }
+  }, []);
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   useEffect(() => {
     let cancelled = false;
+    const nowMs = Date.now();
+    lastResultSyncAtRef.current = nowMs;
+    liveSyncFixtureIdRef.current = fixtureInLiveSyncWindow(stateRef.current, nowMs)?.id ?? null;
     // Local mode cannot run while the browser is closed, so opening the app
     // first performs a provider-neutral catch-up for any due fixtures.
     void fetch("/api/results/sync", { cache: "no-store" })
@@ -316,6 +344,7 @@ export function PoolWorkbench() {
       })
       .then((next) => {
         if (cancelled) return;
+        stateRef.current = next;
         setState(next);
         setSelectedFixtureId(next.activeFixtureId ?? next.fixtures[0]?.id ?? null);
       })
@@ -324,6 +353,53 @@ export function PoolWorkbench() {
       });
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function pollLiveFixture() {
+      const nowMs = Date.now();
+      const liveFixture = fixtureInLiveSyncWindow(stateRef.current, nowMs);
+      if (!liveFixture) {
+        liveSyncFixtureIdRef.current = null;
+        return;
+      }
+
+      if (liveSyncFixtureIdRef.current !== liveFixture.id) {
+        liveSyncFixtureIdRef.current = liveFixture.id;
+        lastResultSyncAtRef.current = 0;
+      }
+      if (
+        syncInFlightRef.current ||
+        nowMs - lastResultSyncAtRef.current < LIVE_SYNC_INTERVAL_MS
+      ) {
+        return;
+      }
+
+      syncInFlightRef.current = true;
+      lastResultSyncAtRef.current = nowMs;
+      try {
+        const response = await fetch("/api/results/sync", { method: "POST" });
+        if (!response.ok) throw new Error(await responseError(response));
+        if (!cancelled) await refreshState();
+      } catch {
+        // The widget keeps showing its last snapshot. The next cadence retries
+        // without interrupting betting history or the rest of the page.
+      } finally {
+        syncInFlightRef.current = false;
+      }
+    }
+
+    void pollLiveFixture();
+    const timer = window.setInterval(
+      () => void pollLiveFixture(),
+      LIVE_SYNC_CLOCK_MS,
+    );
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [refreshState]);
 
   useEffect(() => {
     if (!toast) return;
@@ -542,6 +618,7 @@ export function PoolWorkbench() {
             fixtureId={selectedFixture.providerMatchId}
             kickoffAt={selectedFixture.kickoffAt}
             currentTime={state.serverTime}
+            settled={selectedFixture.recordStatus === "settled"}
             fallback={(
               <div className="wb-matchup" id="wb-match-title">
                 <div className="wb-team wb-team-home"><Flag code={selectedFixture.homeTeam.code} label={selectedFixture.homeTeam.name} /><b>{selectedFixture.homeTeam.name}</b></div>
@@ -556,11 +633,17 @@ export function PoolWorkbench() {
           <div
             className="wb-frozen-score"
             data-frozen={Boolean(result)}
-            aria-label={result ? "已冻结的半场和90分钟结算比分" : "赛后将冻结半场和90分钟结算比分"}
+            aria-label={
+              result
+                ? "已冻结的半场和90分钟结算比分"
+                : selectedFixture.halfTimeScore
+                  ? "半场比分已记录，等待90分钟结算比分"
+                  : "等待半场和90分钟结算比分"
+            }
           >
             <div className="wb-frozen-score-title">
               <span>群内结算基准</span>
-              <b>{result ? "已冻结" : "赛后冻结"}</b>
+              <b>{result ? "已冻结" : selectedFixture.halfTimeScore ? "半场已记录" : "等待赛果"}</b>
             </div>
             <div className="wb-frozen-score-value">
               <span>半场</span>

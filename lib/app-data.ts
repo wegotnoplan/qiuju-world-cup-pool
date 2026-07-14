@@ -128,7 +128,31 @@ export interface NormalizedApiFootballResult {
   message: string;
 }
 
-const COMPLETED_API_FOOTBALL_STATUSES = new Set(["FT", "AET", "PEN"]);
+// ET/BT/P mean regulation time is already complete even though extra time or
+// penalties are still running. score.fulltime is therefore safe to freeze for
+// this pool as soon as one of these statuses is reported.
+const REGULATION_COMPLETE_API_FOOTBALL_STATUSES = new Set([
+  "FT",
+  "ET",
+  "BT",
+  "P",
+  "AET",
+  "PEN",
+]);
+
+function completeProviderScore(
+  value: { home?: unknown; away?: unknown } | null | undefined,
+): RegulationScore | null {
+  if (
+    !Number.isInteger(value?.home) ||
+    !Number.isInteger(value?.away) ||
+    (value?.home as number) < 0 ||
+    (value?.away as number) < 0
+  ) {
+    return null;
+  }
+  return { home: value!.home as number, away: value!.away as number };
+}
 
 /**
  * API-Football's score.fulltime is the regulation score used by this pool.
@@ -140,18 +164,30 @@ export function normalizeApiFootballFixture(
   const rawStatus = match.fixture?.status?.short;
   const providerStatus =
     typeof rawStatus === "string" ? rawStatus.trim().toUpperCase() : "UNKNOWN";
-  if (!COMPLETED_API_FOOTBALL_STATUSES.has(providerStatus)) {
+  const halfTime = completeProviderScore(match.score?.halftime);
+  if (!REGULATION_COMPLETE_API_FOOTBALL_STATUSES.has(providerStatus)) {
     return {
       providerStatus,
-      halfTime: null,
+      halfTime,
       regularTime: null,
       outcome: "waiting",
-      message: "API-Football 尚未明确标记比赛结束，暂不结算。",
+      message: halfTime
+        ? "已记录半场比分；API-Football 尚未明确标记比赛结束，暂不结算。"
+        : "API-Football 尚未明确标记比赛结束，暂不结算。",
     };
   }
 
   const fulltime = match.score?.fulltime;
   const halftime = match.score?.halftime ?? null;
+  if (fulltime?.home == null || fulltime?.away == null) {
+    return {
+      providerStatus,
+      halfTime,
+      regularTime: null,
+      outcome: "waiting",
+      message: "常规时间已经结束，正在等待 API-Football 发布90分钟比分。",
+    };
+  }
   const scoreError = matchScoreValidationError(
     { home: fulltime?.home, away: fulltime?.away },
     halftime,
@@ -168,9 +204,7 @@ export function normalizeApiFootballFixture(
 
   return {
     providerStatus,
-    halfTime: halftime
-      ? { home: halftime.home as number, away: halftime.away as number }
-      : null,
+    halfTime,
     regularTime: {
       home: fulltime!.home as number,
       away: fulltime!.away as number,

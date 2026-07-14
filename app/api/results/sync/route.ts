@@ -26,7 +26,10 @@ import { settlePool } from "@/lib/settlement";
 export const dynamic = "force-dynamic";
 
 type Database = ReturnType<typeof getDb>;
-const AUTO_RETRY_COOLDOWN_MS = 10 * 60 * 1_000;
+// Match polling and the shared API cache use the same cadence. Keeping this a
+// few seconds below the browser's 180-second timer avoids duplicate upstream
+// requests while still allowing one fresh snapshot every three minutes.
+const AUTO_RETRY_COOLDOWN_MS = 175 * 1_000;
 const RETRYABLE_PROVIDER_STATUSES = new Set([
   "NOT_CONFIGURED",
   "PLAN_RESTRICTED",
@@ -34,6 +37,7 @@ const RETRYABLE_PROVIDER_STATUSES = new Set([
   "NETWORK_ERROR",
   "UPSTREAM_ERROR",
   "DISCOVERY_ERROR",
+  "MATCH_NOT_FOUND",
 ]);
 
 function errorChainIncludes(error: unknown, fragment: string): boolean {
@@ -70,6 +74,15 @@ class ApiFootballProvider implements ResultProvider {
       const matches = Array.isArray(result.envelope.response)
         ? result.envelope.response
         : [];
+      if (matches.length === 0) {
+        return {
+          providerStatus: "MATCH_NOT_FOUND",
+          halfTime: null,
+          regularTime: null,
+          outcome: "waiting",
+          message: "API-Football 暂未返回已绑定比赛，保持直播同步并稍后重试。",
+        };
+      }
       if (matches.length !== 1) {
         return {
           providerStatus: "MATCH_NOT_FOUND",
@@ -302,13 +315,21 @@ async function settleFromProvider(
   const fixtureRows = await db.select().from(fixtures).orderBy(asc(fixtures.sequence));
   const fixture = fixtureRows.find((row) => row.id === fixtureId);
   if (!fixture) return { outcome: "blocked", message: "比赛不存在。" };
+  const effectiveHalfTime =
+    halfTime ??
+    (fixture.halfHome !== null && fixture.halfAway !== null
+      ? { home: fixture.halfHome, away: fixture.halfAway }
+      : null);
   if (fixture.status === "settled") {
     const [existingSettlement] = await db
       .select()
       .from(settlements)
       .where(eq(settlements.fixtureId, fixture.id))
       .limit(1);
-    if (existingSettlement && providerSettlementMatches(existingSettlement, score, halfTime)) {
+    if (
+      existingSettlement &&
+      providerSettlementMatches(existingSettlement, score, effectiveHalfTime)
+    ) {
       return {
         outcome: "settled",
         message: "本场此前已经按相同赛果结算。",
@@ -340,7 +361,12 @@ async function settleFromProvider(
     .orderBy(asc(bets.placedAt), asc(bets.id));
   const graded = fixtureBets.map((bet) => ({
     bet,
-    grade: gradeSelection(bet.marketType, bet.selectionCode, score, halfTime),
+    grade: gradeSelection(
+      bet.marketType,
+      bet.selectionCode,
+      score,
+      effectiveHalfTime,
+    ),
   }));
   const unsupported = graded.filter((item) => item.grade === "unsupported");
   if (unsupported.length > 0) {
@@ -362,8 +388,8 @@ async function settleFromProvider(
         .update(fixtures)
         .set({
           status: "review_required",
-          halfHome: halfTime?.home ?? null,
-          halfAway: halfTime?.away ?? null,
+          halfHome: effectiveHalfTime?.home ?? null,
+          halfAway: effectiveHalfTime?.away ?? null,
           regularHome: score.home,
           regularAway: score.away,
           resultSource: "api-football",
@@ -379,8 +405,8 @@ async function settleFromProvider(
         outcome: "review_required",
         message,
         providerStatus,
-        halfHome: halfTime?.home ?? null,
-        halfAway: halfTime?.away ?? null,
+        halfHome: effectiveHalfTime?.home ?? null,
+        halfAway: effectiveHalfTime?.away ?? null,
         regularHome: score.home,
         regularAway: score.away,
         createdAt: now,
@@ -415,11 +441,11 @@ async function settleFromProvider(
   );
 
   const note =
-    "API-Football明确返回比赛结束；只读取score.fulltime作为90分钟比分，未读取goals、加时或点球比分。";
+    "API-Football明确返回常规时间结束；只读取score.fulltime作为90分钟比分，未读取goals、加时或点球比分。";
   const settlementValue = {
     fixtureId: fixture.id,
-    halfHome: halfTime?.home ?? null,
-    halfAway: halfTime?.away ?? null,
+    halfHome: effectiveHalfTime?.home ?? null,
+    halfAway: effectiveHalfTime?.away ?? null,
     regularHome: score.home,
     regularAway: score.away,
     resultBasis: RESULT_BASIS,
@@ -457,8 +483,8 @@ async function settleFromProvider(
         .update(fixtures)
         .set({
           status: "settled",
-          halfHome: halfTime?.home ?? null,
-          halfAway: halfTime?.away ?? null,
+          halfHome: effectiveHalfTime?.home ?? null,
+          halfAway: effectiveHalfTime?.away ?? null,
           regularHome: score.home,
           regularAway: score.away,
           resultSource: "api-football",
@@ -475,8 +501,8 @@ async function settleFromProvider(
         outcome: "settled",
         message: note,
         providerStatus,
-        halfHome: halfTime?.home ?? null,
-        halfAway: halfTime?.away ?? null,
+        halfHome: effectiveHalfTime?.home ?? null,
+        halfAway: effectiveHalfTime?.away ?? null,
         regularHome: score.home,
         regularAway: score.away,
         createdAt: now,
@@ -490,7 +516,7 @@ async function settleFromProvider(
       .where(eq(settlements.fixtureId, fixture.id))
       .limit(1);
     if (!existingSettlement) throw error;
-    if (!providerSettlementMatches(existingSettlement, score, halfTime)) {
+    if (!providerSettlementMatches(existingSettlement, score, effectiveHalfTime)) {
       return {
         outcome: "manual_review",
         message: "本场已按另一份赛果结算，自动同步不会覆盖。",
@@ -525,6 +551,7 @@ async function discoverProviderMatchId(
   fixture: typeof fixtures.$inferSelect,
 ): Promise<ProviderDiscoveryResult> {
   try {
+    const kickoffDistanceMs = Date.parse(fixture.kickoffAt) - Date.now();
     const result = await fetchApiFootball<ApiFootballFixturePayload[]>({
       endpoint: "fixtures",
       // A date lookup is intentionally server-only. The browser proxy remains
@@ -533,7 +560,8 @@ async function discoverProviderMatchId(
         date: fixture.kickoffAt.slice(0, 10),
         timezone: "Asia/Shanghai",
       },
-      ttlSeconds: 6 * 60 * 60,
+      ttlSeconds:
+        kickoffDistanceMs > 6 * 60 * 60 * 1_000 ? 6 * 60 * 60 : 175,
     });
     const candidates = (
       Array.isArray(result.envelope.response) ? result.envelope.response : []
@@ -656,7 +684,7 @@ async function runSync(force = false) {
 
   const dueFixtures = (await db.select().from(fixtures).orderBy(asc(fixtures.sequence))).filter(
     (fixture) =>
-      fixture.status === "scheduled" && Date.parse(fixture.resultSyncDueAt) <= nowMs
+      fixture.status === "scheduled" && Date.parse(fixture.kickoffAt) <= nowMs
   );
   const results: Array<Record<string, unknown>> = [];
 
@@ -719,13 +747,30 @@ async function runSync(force = false) {
         fixtureId: fixture.id,
         matchCode: fixture.matchCode,
         outcome: "cooldown",
-        message: "刚刚检查过赛果，10分钟内不重复占用接口额度。",
+        message: "刚刚检查过赛况，3分钟内不重复占用接口额度。",
       });
       continue;
     }
 
     const providerResult = await provider.getMatch(providerMatchId);
     if (providerResult.outcome === "waiting") {
+      if (providerResult.halfTime) {
+        await db
+          .update(fixtures)
+          .set({
+            halfHome: providerResult.halfTime.home,
+            halfAway: providerResult.halfTime.away,
+            resultSource: "api-football",
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(fixtures.id, fixture.id),
+              isNull(fixtures.halfHome),
+              isNull(fixtures.halfAway),
+            ),
+          );
+      }
       await audit(
         db,
         fixture.id,
@@ -733,7 +778,9 @@ async function runSync(force = false) {
         "waiting",
         providerResult.message,
         now,
-        providerResult.providerStatus
+        providerResult.providerStatus,
+        undefined,
+        providerResult.halfTime,
       );
       results.push({
         fixtureId: fixture.id,

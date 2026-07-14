@@ -47,6 +47,8 @@ test("pool workbench includes avatar bets, frozen regulation score, and podium U
   assert.match(workbench, /下注人[\s\S]*项目[\s\S]*赔率/);
   assert.match(workbench, /不含加时与点球/);
   assert.match(workbench, /等待对阵与赔率/);
+  assert.match(workbench, /LIVE_SYNC_INTERVAL_MS = 180_000/);
+  assert.match(workbench, /fixtureInLiveSyncWindow/);
   assert.match(podium, /本场中奖榜领奖台/);
   assert.match(avatarData, /\/avatars\/gao\.png/);
   assert.deepEqual(

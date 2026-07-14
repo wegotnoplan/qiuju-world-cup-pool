@@ -907,8 +907,8 @@ async function manualResult(db: Database, payload: ManualResultRequest, now: str
     .where(eq(fixtures.id, payload.fixtureId))
     .limit(1);
   if (!fixture) badRequest("比赛不存在。", 404);
-  if (Date.parse(now) < Date.parse(fixture.resultSyncDueAt)) {
-    badRequest("尚未到赛果复核时间。", 409);
+  if (Date.parse(now) < Date.parse(fixture.kickoffAt)) {
+    badRequest("比赛尚未开赛，不能录入赛果。", 409);
   }
   await settleFixture(db, {
     fixtureId: payload.fixtureId,
