@@ -2,11 +2,11 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "crons": [
     {
-      "path": "/api/results/sync",
+      "path": "/api/results/sync?slot=0700",
       "schedule": "0 23 * * *"
     },
     {
-      "path": "/api/results/sync",
+      "path": "/api/results/sync?slot=0900",
       "schedule": "0 1 * * *"
     }
   ]
