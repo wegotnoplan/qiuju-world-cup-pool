@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   bets,
@@ -113,6 +113,16 @@ async function ensureSeedData(db: Database) {
     )
     .onConflictDoNothing();
 
+  // Preserve IDs entered by an administrator, but backfill provider IDs that
+  // became known after an existing local D1 database had already been seeded.
+  for (const fixture of FIXTURES) {
+    if (!fixture.providerMatchId) continue;
+    await db
+      .update(fixtures)
+      .set({ providerMatchId: fixture.providerMatchId })
+      .where(and(eq(fixtures.id, fixture.id), isNull(fixtures.providerMatchId)));
+  }
+
   // D1 has a conservative bound-parameter limit. Read existing IDs once and
   // insert only missing seed rows in small batches instead of sending all 108
   // screenshot options in one statement.
@@ -195,6 +205,7 @@ async function loadState(db: Database, now = new Date().toISOString()): Promise<
     resultBasis: RESULT_BASIS,
     resultSource:
       row.resultSource === "external-provider" ||
+      row.resultSource === "api-football" ||
       row.resultSource === "football-data.org"
         ? row.resultSource
         : "manual",
@@ -245,6 +256,7 @@ async function loadState(db: Database, now = new Date().toISOString()): Promise<
         : { home: row.regularHome, away: row.regularAway },
     resultSource:
       row.resultSource === "manual" ||
+      row.resultSource === "api-football" ||
       row.resultSource === "football-data.org" ||
       row.resultSource === "external-provider"
         ? row.resultSource
@@ -615,7 +627,7 @@ interface SettleInput {
   halfAway: number | null;
   regularHome: number;
   regularAway: number;
-  source: "external-provider" | "football-data.org" | "manual";
+  source: "external-provider" | "api-football" | "football-data.org" | "manual";
   note: string;
   now: string;
 }
@@ -702,7 +714,12 @@ async function settleFixture(db: Database, input: SettleInput) {
         source: input.source,
         outcome: "review_required",
         message,
-        providerStatus: input.source === "football-data.org" ? "FINISHED" : "MANUAL",
+        providerStatus:
+          input.source === "api-football"
+            ? "FT"
+            : input.source === "football-data.org"
+              ? "FINISHED"
+              : "MANUAL",
         halfHome: halfTimeScore?.home ?? null,
         halfAway: halfTimeScore?.away ?? null,
         regularHome: score.home,
@@ -802,7 +819,12 @@ async function settleFixture(db: Database, input: SettleInput) {
         source: input.source,
         outcome: "settled",
         message: input.note,
-        providerStatus: input.source === "football-data.org" ? "FINISHED" : "MANUAL",
+        providerStatus:
+          input.source === "api-football"
+            ? "FT"
+            : input.source === "football-data.org"
+              ? "FINISHED"
+              : "MANUAL",
         halfHome: halfTimeScore?.home ?? null,
         halfAway: halfTimeScore?.away ?? null,
         regularHome: score.home,

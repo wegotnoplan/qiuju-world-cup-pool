@@ -176,3 +176,24 @@ export const resultAudits = sqliteTable(
   },
   (table) => [index("result_audits_fixture_created_idx").on(table.fixtureId, table.createdAt)]
 );
+
+/**
+ * A small persistent cache shared by the widget proxy and result sync.
+ * Keeping successful upstream payloads in D1 prevents every browser tab from
+ * spending the API-Football free-plan allowance independently.
+ */
+export const apiFootballCache = sqliteTable(
+  "api_football_cache",
+  {
+    cacheKey: text("cache_key").primaryKey(),
+    endpoint: text("endpoint").notNull(),
+    responseBody: text("response_body").notNull(),
+    upstreamStatus: integer("upstream_status").notNull(),
+    quotaLimit: integer("quota_limit"),
+    quotaRemaining: integer("quota_remaining"),
+    expiresAt: text("expires_at").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("api_football_cache_expires_idx").on(table.expiresAt)]
+);

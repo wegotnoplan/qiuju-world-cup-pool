@@ -60,15 +60,17 @@ npm run dev -- --port 5173
 - `EXACT_SCORE`：例如 `2-1`
 - 半球整数让球和平局退款也有基础支持；四分之一盘与无法仅凭比分判定的球员玩法会进入人工复核
 
-## 赛果同步
+## API-Football Widget 与赛果同步
 
-赛果层保留为可替换适配器，等待后续确认 widget/API 后接入，不把页面和结算逻辑绑定到单一来源。当前仍可选用已有的 [football-data.org v4](https://www.football-data.org/documentation/quickstart) 适配器，服务器端变量为：
+页面使用 API-Sports Widget 展示当前单场赛况，同时通过本项目的同源代理读取数据。API key 只保存在服务端，浏览器端 `data-key` 留空，由 `/api/api-football/fixtures` 与 `/api/api-football/standings` 注入凭据；代理只开放 2026 世界杯或已绑定的比赛 ID，并把成功响应缓存到 D1。不要把 key 写入 `NEXT_PUBLIC_*`、组件属性或提交到 Git。
 
 ```powershell
 Copy-Item .env.example .env.local
 ```
 
-然后在 `.env.local` 中填写 `FOOTBALL_DATA_API_TOKEN`，并在赔率 JSON 中提供对应的 `providerMatchId`。
+然后在 `.env.local` 中填写 `API_FOOTBALL_KEY`。M101 已绑定 API-Football fixture `1585131`；其余场次会在开赛前 36 小时进入发现窗口后，按北京时间比赛日、开球时间和对阵自动识别并保存 `providerMatchId`，也可在赔率 JSON 中手工提供。
+
+免费计划每天只有 100 次请求、每分钟 10 次。本项目让所有浏览器共享 D1 缓存：直播单场约 3 分钟更新一次，未开赛至少缓存 30 分钟，结束赛果缓存 24 小时。结算请求也复用相同缓存，因此适合七人本地小群；若免费计划拒绝 `league=1&season=2026`，接口会明确返回套餐限制，不会泄露 key 或反复消耗已进入人工复核的场次。比赛日自动发现走服务器端 `date + timezone` 查询，再校验返回的 league/season。
 
 首次同步窗口为 M101/M102/M104 北京时间 07:00，M103 北京时间 09:00。同步层只接受明确的半场比分和 90 分钟比分，不会退回使用加时或点球比分。字段缺失或含义不清时进入人工复核。
 
@@ -87,7 +89,7 @@ npm test
 
 项目已使用 D1 持久化，并在 `.openai/hosting.json` 声明 `DB` 绑定。上线前还需要：
 
-1. 配置托管环境的 D1 和 `FOOTBALL_DATA_API_TOKEN`
+1. 配置托管环境的 D1 和 `API_FOOTBALL_KEY`
 2. 给 `/api/results/sync` 配置服务端定时任务
 3. 上传正式赔率及每场的 `providerMatchId`
-4. 如对数据延迟要求更高，可通过现有 provider adapter 接入 API-Football 或商业数据源
+4. 根据 API-Football 套餐与调用额度调整 Widget 刷新间隔或升级数据源

@@ -14,6 +14,7 @@ import {
   type OddsOffer,
   type ParticipantId,
 } from "@/lib/app-data";
+import { ApiSportsGameWidget } from "./ApiSportsGameWidget";
 
 type DraftSlots = Partial<Record<ParticipantId, Array<OddsOffer | null>>>;
 type SheetName = "people" | "odds" | "confirm" | "manage" | "rules" | null;
@@ -497,7 +498,7 @@ export function PoolWorkbench() {
       </header>
 
       <main className="wb-main">
-        <section className="wb-scoreboard" aria-labelledby="wb-match-title">
+        <section className="wb-scoreboard" aria-label="当前比赛、奖池与赛果">
           <div className="wb-match-meta">
             <span>{selectedFixture.matchCode} · {STAGE_LABEL[selectedFixture.stage]}</span>
             <strong>{shanghaiDateTime(selectedFixture.kickoffAt)} 北京时间</strong>
@@ -505,14 +506,21 @@ export function PoolWorkbench() {
               {statusLabel(selectedFixture, state.activeFixtureId)}
             </span>
           </div>
-          <div className="wb-matchup" id="wb-match-title">
-            <div className="wb-team wb-team-home"><Flag code={selectedFixture.homeTeam.code} label={selectedFixture.homeTeam.name} /><b>{selectedFixture.homeTeam.name}</b></div>
-            <div className="wb-score">
-              <strong>{result ? `${result.home} : ${result.away}` : "— : —"}</strong>
-              <span>{result ? "90分钟比分" : "比分已锁定"}</span>
-            </div>
-            <div className="wb-team wb-team-away"><Flag code={selectedFixture.awayTeam.code} label={selectedFixture.awayTeam.name} /><b>{selectedFixture.awayTeam.name}</b></div>
-          </div>
+          <ApiSportsGameWidget
+            fixtureId={selectedFixture.providerMatchId}
+            kickoffAt={selectedFixture.kickoffAt}
+            currentTime={state.serverTime}
+            fallback={(
+              <div className="wb-matchup" id="wb-match-title">
+                <div className="wb-team wb-team-home"><Flag code={selectedFixture.homeTeam.code} label={selectedFixture.homeTeam.name} /><b>{selectedFixture.homeTeam.name}</b></div>
+                <div className="wb-score">
+                  <strong>{result ? `${result.home} : ${result.away}` : "— : —"}</strong>
+                  <span>{result ? "90分钟比分" : "比分待赛后锁定"}</span>
+                </div>
+                <div className="wb-team wb-team-away"><Flag code={selectedFixture.awayTeam.code} label={selectedFixture.awayTeam.name} /><b>{selectedFixture.awayTeam.name}</b></div>
+              </div>
+            )}
+          />
           <div className="wb-match-stats">
             <div><span>本场总奖池</span><strong>{money(fixturePool)}</strong></div>
             <div><span>参与人数</span><strong>{selectedEntries.length}<small> / 7</small></strong></div>

@@ -1,5 +1,4 @@
-import { env } from "cloudflare:workers";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   bets,
@@ -11,16 +10,31 @@ import {
 import {
   FIXTURES,
   gradeSelection,
-  matchScoreValidationError,
   PARTICIPANTS,
   RESULT_BASIS,
   type RegulationScore,
 } from "@/lib/app-data";
+import {
+  ApiFootballRequestError,
+  fetchApiFootball,
+  findApiFootballFixture,
+  normalizeApiFootballFixture,
+  type ApiFootballFixturePayload,
+} from "@/lib/api-football";
 import { settlePool } from "@/lib/settlement";
 
 export const dynamic = "force-dynamic";
 
 type Database = ReturnType<typeof getDb>;
+const AUTO_RETRY_COOLDOWN_MS = 10 * 60 * 1_000;
+const RETRYABLE_PROVIDER_STATUSES = new Set([
+  "NOT_CONFIGURED",
+  "PLAN_RESTRICTED",
+  "QUOTA_EXCEEDED",
+  "NETWORK_ERROR",
+  "UPSTREAM_ERROR",
+  "DISCOVERY_ERROR",
+]);
 
 function errorChainIncludes(error: unknown, fragment: string): boolean {
   let current = error;
@@ -40,121 +54,51 @@ interface ProviderResult {
 }
 
 interface ResultProvider {
-  readonly name: "football-data.org";
+  readonly name: "api-football";
   getMatch(providerMatchId: string): Promise<ProviderResult>;
 }
 
-interface FootballDataPayload {
-  status?: unknown;
-  score?: {
-    halfTime?: {
-      home?: unknown;
-      away?: unknown;
-    } | null;
-    regularTime?: {
-      home?: unknown;
-      away?: unknown;
-    } | null;
-  } | null;
-}
-
-class FootballDataProvider implements ResultProvider {
-  readonly name = "football-data.org" as const;
-
-  constructor(private readonly token: string) {}
+class ApiFootballProvider implements ResultProvider {
+  readonly name = "api-football" as const;
 
   async getMatch(providerMatchId: string): Promise<ProviderResult> {
-    let response: Response;
     try {
-      response = await fetch(
-        `https://api.football-data.org/v4/matches/${encodeURIComponent(providerMatchId)}`,
-        {
-          headers: { "X-Auth-Token": this.token, Accept: "application/json" },
-          signal: AbortSignal.timeout(12_000),
-          cache: "no-store",
-        }
-      );
-    } catch {
+      const result = await fetchApiFootball<ApiFootballFixturePayload[]>({
+        endpoint: "fixtures",
+        params: { id: providerMatchId },
+      });
+      const matches = Array.isArray(result.envelope.response)
+        ? result.envelope.response
+        : [];
+      if (matches.length !== 1) {
+        return {
+          providerStatus: "MATCH_NOT_FOUND",
+          halfTime: null,
+          regularTime: null,
+          outcome: "manual_review",
+          message: "API-Football 没有返回唯一的已绑定比赛，需要人工复核比赛 ID。",
+        };
+      }
+      return normalizeApiFootballFixture(matches[0]!);
+    } catch (error) {
+      if (error instanceof ApiFootballRequestError) {
+        return {
+          providerStatus: error.code,
+          halfTime: null,
+          regularTime: null,
+          outcome: "waiting",
+          message: `${error.message} 本场保持待同步状态，可稍后重试。`,
+        };
+      }
       return {
         providerStatus: "NETWORK_ERROR",
         halfTime: null,
         regularTime: null,
-        outcome: "manual_review",
-        message: "赛果服务暂时不可用，需要稍后重试或人工复核。",
-      };
-    }
-
-    if (!response.ok) {
-      return {
-        providerStatus: `HTTP_${response.status}`,
-        halfTime: null,
-        regularTime: null,
-        outcome: "manual_review",
-        message: "赛果服务未返回可用结果，需要人工复核。",
-      };
-    }
-
-    let payload: FootballDataPayload;
-    try {
-      payload = (await response.json()) as FootballDataPayload;
-    } catch {
-      return {
-        providerStatus: "INVALID_JSON",
-        halfTime: null,
-        regularTime: null,
-        outcome: "manual_review",
-        message: "赛果服务响应格式无效，需要人工复核。",
-      };
-    }
-
-    const providerStatus = typeof payload.status === "string" ? payload.status : "UNKNOWN";
-    if (providerStatus !== "FINISHED") {
-      return {
-        providerStatus,
-        halfTime: null,
-        regularTime: null,
         outcome: "waiting",
-        message: "数据源尚未明确标记比赛为FINISHED，暂不结算。",
+        message: "API-Football 暂时不可用，本场保持待同步状态。",
       };
     }
-
-    // Deliberately do not fall back to score.fullTime: it may include extra time.
-    const regularTime = payload.score?.regularTime;
-    const halfTime = payload.score?.halfTime ?? null;
-    const scoreError = matchScoreValidationError(
-      { home: regularTime?.home, away: regularTime?.away },
-      halfTime,
-    );
-    if (scoreError) {
-      return {
-        providerStatus,
-        halfTime: null,
-        regularTime: null,
-        outcome: "manual_review",
-        message: `赛果数据未通过校验：${scoreError} 禁止使用全场、加时或点球比分代替。`,
-      };
-    }
-
-    return {
-      providerStatus,
-      halfTime: halfTime
-        ? { home: halfTime.home as number, away: halfTime.away as number }
-        : null,
-      regularTime: {
-        home: regularTime!.home as number,
-        away: regularTime!.away as number,
-      },
-      outcome: "ready",
-      message: "已取得90分钟常规时间及伤停补时比分。",
-    };
   }
-}
-
-function getProviderToken(): string | null {
-  const workerToken = (env as unknown as { FOOTBALL_DATA_API_TOKEN?: string })
-    .FOOTBALL_DATA_API_TOKEN;
-  const token = workerToken || process.env.FOOTBALL_DATA_API_TOKEN;
-  return token?.trim() || null;
 }
 
 async function ensureSeedData(db: Database) {
@@ -186,6 +130,14 @@ async function ensureSeedData(db: Database) {
       }))
     )
     .onConflictDoNothing();
+
+  for (const fixture of FIXTURES) {
+    if (!fixture.providerMatchId) continue;
+    await db
+      .update(fixtures)
+      .set({ providerMatchId: fixture.providerMatchId })
+      .where(and(eq(fixtures.id, fixture.id), isNull(fixtures.providerMatchId)));
+  }
 }
 
 async function audit(
@@ -212,6 +164,29 @@ async function audit(
     regularAway: score?.away ?? null,
     createdAt: now,
   });
+}
+
+async function isInAutoRetryCooldown(
+  db: Database,
+  fixtureId: string,
+  nowMs: number,
+  cooldownMs = AUTO_RETRY_COOLDOWN_MS,
+): Promise<boolean> {
+  const [latestWaiting] = await db
+    .select({ createdAt: resultAudits.createdAt })
+    .from(resultAudits)
+    .where(
+      and(
+        eq(resultAudits.fixtureId, fixtureId),
+        eq(resultAudits.outcome, "waiting"),
+      ),
+    )
+    .orderBy(desc(resultAudits.createdAt))
+    .limit(1);
+  return Boolean(
+    latestWaiting &&
+      nowMs - Date.parse(latestWaiting.createdAt) < cooldownMs,
+  );
 }
 
 async function markReviewRequired(
@@ -248,7 +223,7 @@ async function markReviewRequired(
         reviewNote: message,
         regularHome: score?.home,
         regularAway: score?.away,
-        resultSource: score ? "football-data.org" : null,
+        resultSource: score ? "api-football" : null,
         resultBasis: score ? RESULT_BASIS : null,
         updatedAt: now,
       })
@@ -256,7 +231,7 @@ async function markReviewRequired(
     db.insert(resultAudits).values({
       id: crypto.randomUUID(),
       fixtureId,
-      source: "football-data.org",
+      source: "api-football",
       outcome: "review_required",
       message,
       providerStatus: providerStatus ?? null,
@@ -293,6 +268,7 @@ async function settleFromProvider(
   fixtureId: string,
   score: RegulationScore,
   halfTime: RegulationScore | null,
+  providerStatus: string,
   now: string
 ): Promise<SyncSettlementResult> {
   const fixtureRows = await db.select().from(fixtures).orderBy(asc(fixtures.sequence));
@@ -362,7 +338,7 @@ async function settleFromProvider(
           halfAway: halfTime?.away ?? null,
           regularHome: score.home,
           regularAway: score.away,
-          resultSource: "football-data.org",
+          resultSource: "api-football",
           resultBasis: RESULT_BASIS,
           reviewNote: message,
           updatedAt: now,
@@ -371,10 +347,10 @@ async function settleFromProvider(
       db.insert(resultAudits).values({
         id: crypto.randomUUID(),
         fixtureId: fixture.id,
-        source: "football-data.org",
+        source: "api-football",
         outcome: "review_required",
         message,
-        providerStatus: "FINISHED",
+        providerStatus,
         halfHome: halfTime?.home ?? null,
         halfAway: halfTime?.away ?? null,
         regularHome: score.home,
@@ -410,7 +386,8 @@ async function settleFromProvider(
     poolSettlement.tickets.map((ticket) => [ticket.ticketId, ticket])
   );
 
-  const note = "football-data.org明确返回FINISHED及score.regularTime；未读取fullTime、加时或点球比分。";
+  const note =
+    "API-Football明确返回比赛结束；只读取score.fulltime作为90分钟比分，未读取goals、加时或点球比分。";
   const settlementValue = {
     fixtureId: fixture.id,
     halfHome: halfTime?.home ?? null,
@@ -418,7 +395,7 @@ async function settleFromProvider(
     regularHome: score.home,
     regularAway: score.away,
     resultBasis: RESULT_BASIS,
-    resultSource: "football-data.org",
+    resultSource: "api-football",
     poolBeforeCents,
     currentFixtureStakeCents,
     eligiblePoolCents,
@@ -456,7 +433,7 @@ async function settleFromProvider(
           halfAway: halfTime?.away ?? null,
           regularHome: score.home,
           regularAway: score.away,
-          resultSource: "football-data.org",
+          resultSource: "api-football",
           resultBasis: RESULT_BASIS,
           reviewNote: null,
           settledAt: now,
@@ -466,10 +443,10 @@ async function settleFromProvider(
       db.insert(resultAudits).values({
         id: crypto.randomUUID(),
         fixtureId: fixture.id,
-        source: "football-data.org",
+        source: "api-football",
         outcome: "settled",
         message: note,
-        providerStatus: "FINISHED",
+        providerStatus,
         halfHome: halfTime?.home ?? null,
         halfAway: halfTime?.away ?? null,
         regularHome: score.home,
@@ -510,33 +487,216 @@ async function settleFromProvider(
   };
 }
 
-async function runSync() {
+interface ProviderDiscoveryResult {
+  providerMatchId: string | null;
+  providerStatus: string;
+  message: string;
+}
+
+async function discoverProviderMatchId(
+  fixture: typeof fixtures.$inferSelect,
+): Promise<ProviderDiscoveryResult> {
+  try {
+    const result = await fetchApiFootball<ApiFootballFixturePayload[]>({
+      endpoint: "fixtures",
+      // A date lookup is intentionally server-only. The browser proxy remains
+      // restricted to league=1/season=2026 or an already-bound fixture ID.
+      params: {
+        date: fixture.kickoffAt.slice(0, 10),
+        timezone: "Asia/Shanghai",
+      },
+      ttlSeconds: 6 * 60 * 60,
+    });
+    const candidates = (
+      Array.isArray(result.envelope.response) ? result.envelope.response : []
+    ).filter(
+      (match) =>
+        Number(match.league?.id) === 1 &&
+        Number(match.league?.season) === 2026,
+    );
+    const match = findApiFootballFixture(candidates, {
+      kickoffAt: fixture.kickoffAt,
+      homeTeamEnglishName: fixture.homeTeamEnglishName,
+      awayTeamEnglishName: fixture.awayTeamEnglishName,
+      teamsArePlaceholders:
+        fixture.homeTeamPlaceholder || fixture.awayTeamPlaceholder,
+    });
+    const id = match?.fixture?.id;
+    if (!Number.isSafeInteger(id)) {
+      return {
+        providerMatchId: null,
+        providerStatus: "MATCH_NOT_FOUND",
+        message:
+          "API-Football 的比赛日数据中没有唯一匹配本场的 2026 世界杯比赛，需要人工绑定比赛 ID。",
+      };
+    }
+    return {
+      providerMatchId: String(id),
+      providerStatus: "MATCH_ID_DISCOVERED",
+      message: `已按开球时间与对阵自动绑定 API-Football 比赛 ID ${id}。`,
+    };
+  } catch (error) {
+    if (error instanceof ApiFootballRequestError) {
+      return {
+        providerMatchId: null,
+        providerStatus: error.code,
+        message: error.message,
+      };
+    }
+    return {
+      providerMatchId: null,
+      providerStatus: "DISCOVERY_ERROR",
+      message: "无法自动识别 API-Football 比赛 ID，需要人工绑定。",
+    };
+  }
+}
+
+async function runSync(force = false) {
   const db = getDb();
   await ensureSeedData(db);
   const now = new Date().toISOString();
   const nowMs = Date.parse(now);
+  const provider = new ApiFootballProvider();
+  const discoveryResults: Array<Record<string, unknown>> = [];
+
+  // Bind the next match before kickoff so its game widget has an ID to render.
+  // A failed pre-match lookup never changes the fixture to review_required;
+  // it can be retried safely and successful date responses are cached for 6h.
+  const upcomingUnbound = (
+    await db.select().from(fixtures).orderBy(asc(fixtures.sequence))
+  ).filter((fixture) => {
+    const kickoffMs = Date.parse(fixture.kickoffAt);
+    return (
+      fixture.status === "scheduled" &&
+      !fixture.providerMatchId &&
+      kickoffMs > nowMs &&
+      kickoffMs - nowMs <= 36 * 60 * 60 * 1_000
+    );
+  });
+  for (const fixture of upcomingUnbound) {
+    if (
+      !force &&
+      (await isInAutoRetryCooldown(db, fixture.id, nowMs, 6 * 60 * 60 * 1_000))
+    ) {
+      discoveryResults.push({
+        fixtureId: fixture.id,
+        matchCode: fixture.matchCode,
+        outcome: "cooldown",
+        message: "赛前比赛 ID 刚检查过，6小时内不重复占用接口额度。",
+      });
+      continue;
+    }
+    const discovery = await discoverProviderMatchId(fixture);
+    if (!discovery.providerMatchId) {
+      await audit(
+        db,
+        fixture.id,
+        provider.name,
+        "waiting",
+        discovery.message,
+        now,
+        discovery.providerStatus,
+      );
+      discoveryResults.push({
+        fixtureId: fixture.id,
+        matchCode: fixture.matchCode,
+        outcome: "waiting",
+        message: discovery.message,
+      });
+      continue;
+    }
+    await db
+      .update(fixtures)
+      .set({ providerMatchId: discovery.providerMatchId, updatedAt: now })
+      .where(eq(fixtures.id, fixture.id));
+    await audit(
+      db,
+      fixture.id,
+      provider.name,
+      "match_id_discovered",
+      discovery.message,
+      now,
+      discovery.providerStatus,
+    );
+    discoveryResults.push({
+      fixtureId: fixture.id,
+      matchCode: fixture.matchCode,
+      outcome: "bound",
+      providerMatchId: discovery.providerMatchId,
+    });
+  }
+
   const dueFixtures = (await db.select().from(fixtures).orderBy(asc(fixtures.sequence))).filter(
-    (fixture) => fixture.status !== "settled" && Date.parse(fixture.resultSyncDueAt) <= nowMs
+    (fixture) =>
+      fixture.status === "scheduled" && Date.parse(fixture.resultSyncDueAt) <= nowMs
   );
-  const token = getProviderToken();
-  const provider = token ? new FootballDataProvider(token) : null;
   const results: Array<Record<string, unknown>> = [];
 
   for (const fixture of dueFixtures) {
-    if (!provider) {
-      const message = "未配置服务器端赛果服务凭据，需要人工复核。";
-      await markReviewRequired(db, fixture.id, message, now, "NOT_CONFIGURED");
-      results.push({ fixtureId: fixture.id, matchCode: fixture.matchCode, outcome: "manual_review", message });
-      continue;
+    let providerMatchId = fixture.providerMatchId;
+    if (!providerMatchId) {
+      const discovery = await discoverProviderMatchId(fixture);
+      providerMatchId = discovery.providerMatchId;
+      if (!providerMatchId) {
+        if (RETRYABLE_PROVIDER_STATUSES.has(discovery.providerStatus)) {
+          await audit(
+            db,
+            fixture.id,
+            provider.name,
+            "waiting",
+            discovery.message,
+            now,
+            discovery.providerStatus,
+          );
+          results.push({
+            fixtureId: fixture.id,
+            matchCode: fixture.matchCode,
+            outcome: "waiting",
+            message: discovery.message,
+          });
+          continue;
+        }
+        await markReviewRequired(
+          db,
+          fixture.id,
+          discovery.message,
+          now,
+          discovery.providerStatus,
+        );
+        results.push({
+          fixtureId: fixture.id,
+          matchCode: fixture.matchCode,
+          outcome: "manual_review",
+          message: discovery.message,
+        });
+        continue;
+      }
+      await db
+        .update(fixtures)
+        .set({ providerMatchId, updatedAt: now })
+        .where(eq(fixtures.id, fixture.id));
+      await audit(
+        db,
+        fixture.id,
+        provider.name,
+        "match_id_discovered",
+        discovery.message,
+        now,
+        discovery.providerStatus,
+      );
     }
-    if (!fixture.providerMatchId) {
-      const message = "本场尚未绑定赛果服务比赛ID，需要人工复核。";
-      await markReviewRequired(db, fixture.id, message, now, "MATCH_ID_MISSING");
-      results.push({ fixtureId: fixture.id, matchCode: fixture.matchCode, outcome: "manual_review", message });
+
+    if (!force && (await isInAutoRetryCooldown(db, fixture.id, nowMs))) {
+      results.push({
+        fixtureId: fixture.id,
+        matchCode: fixture.matchCode,
+        outcome: "cooldown",
+        message: "刚刚检查过赛果，10分钟内不重复占用接口额度。",
+      });
       continue;
     }
 
-    const providerResult = await provider.getMatch(fixture.providerMatchId);
+    const providerResult = await provider.getMatch(providerMatchId);
     if (providerResult.outcome === "waiting") {
       await audit(
         db,
@@ -577,6 +737,7 @@ async function runSync() {
       fixture.id,
       providerResult.regularTime,
       providerResult.halfTime,
+      providerResult.providerStatus,
       now
     );
     results.push({ fixtureId: fixture.id, matchCode: fixture.matchCode, ...settlement });
@@ -586,6 +747,7 @@ async function runSync() {
     syncedAt: now,
     resultBasis: RESULT_BASIS,
     resultBasisLabel: "90分钟常规时间＋伤停补时；不含加时赛与点球大战",
+    discoveryResults,
     dueCount: dueFixtures.length,
     results,
   };
@@ -607,7 +769,7 @@ function errorResponse(error: unknown) {
 /** GET is intentionally catch-up capable so reopening a closed browser can resume sync. */
 export async function GET() {
   try {
-    return Response.json(await runSync());
+    return Response.json(await runSync(false));
   } catch (error) {
     return errorResponse(error);
   }
@@ -615,7 +777,7 @@ export async function GET() {
 
 export async function POST() {
   try {
-    return Response.json(await runSync());
+    return Response.json(await runSync(true));
   } catch (error) {
     return errorResponse(error);
   }

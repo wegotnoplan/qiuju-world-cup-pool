@@ -6,6 +6,7 @@ import {
   deriveFixtureStates,
   gradeSelection,
   matchScoreValidationError,
+  normalizeApiFootballFixture,
 } from "../lib/app-data.ts";
 import { ALL_SEED_ODDS, SEED_ODDS_BY_FIXTURE } from "../lib/seed-odds.ts";
 
@@ -78,6 +79,43 @@ test("rejects impossible half-time and 90-minute score combinations", () => {
     ),
     /90分钟比分/,
   );
+});
+
+test("API-Football AET and PEN results settle strictly from score.fulltime", () => {
+  const afterExtraTime = normalizeApiFootballFixture({
+    fixture: { status: { short: "AET" } },
+    goals: { home: 3, away: 2 },
+    score: {
+      halftime: { home: 1, away: 0 },
+      fulltime: { home: 1, away: 1 },
+      extratime: { home: 3, away: 2 },
+      penalty: { home: null, away: null },
+    },
+  });
+  assert.equal(afterExtraTime.outcome, "ready");
+  assert.deepEqual(afterExtraTime.regularTime, { home: 1, away: 1 });
+
+  const afterPenalties = normalizeApiFootballFixture({
+    fixture: { status: { short: "PEN" } },
+    goals: { home: 6, away: 5 },
+    score: {
+      halftime: { home: 0, away: 0 },
+      fulltime: { home: 0, away: 0 },
+      extratime: { home: 1, away: 1 },
+      penalty: { home: 5, away: 4 },
+    },
+  });
+  assert.equal(afterPenalties.outcome, "ready");
+  assert.deepEqual(afterPenalties.regularTime, { home: 0, away: 0 });
+});
+
+test("API-Football does not settle before an explicit completed status", () => {
+  const live = normalizeApiFootballFixture({
+    fixture: { status: { short: "2H" } },
+    score: { fulltime: { home: 2, away: 1 } },
+  });
+  assert.equal(live.outcome, "waiting");
+  assert.equal(live.regularTime, null);
 });
 
 test("keeps later fixtures locked until the prior fixture settles", () => {

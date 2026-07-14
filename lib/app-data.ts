@@ -92,8 +92,139 @@ export function matchScoreValidationError(
   return null;
 }
 
+export interface ApiFootballFixturePayload {
+  fixture?: {
+    id?: unknown;
+    date?: unknown;
+    status?: {
+      long?: unknown;
+      short?: unknown;
+      elapsed?: unknown;
+    } | null;
+  } | null;
+  league?: {
+    id?: unknown;
+    season?: unknown;
+    round?: unknown;
+  } | null;
+  teams?: {
+    home?: { id?: unknown; name?: unknown } | null;
+    away?: { id?: unknown; name?: unknown } | null;
+  } | null;
+  goals?: { home?: unknown; away?: unknown } | null;
+  score?: {
+    halftime?: { home?: unknown; away?: unknown } | null;
+    fulltime?: { home?: unknown; away?: unknown } | null;
+    extratime?: { home?: unknown; away?: unknown } | null;
+    penalty?: { home?: unknown; away?: unknown } | null;
+  } | null;
+}
+
+export interface NormalizedApiFootballResult {
+  providerStatus: string;
+  halfTime: RegulationScore | null;
+  regularTime: RegulationScore | null;
+  outcome: "ready" | "waiting" | "manual_review";
+  message: string;
+}
+
+const COMPLETED_API_FOOTBALL_STATUSES = new Set(["FT", "AET", "PEN"]);
+
+/**
+ * API-Football's score.fulltime is the regulation score used by this pool.
+ * goals, score.extratime and score.penalty are intentionally never read.
+ */
+export function normalizeApiFootballFixture(
+  match: ApiFootballFixturePayload,
+): NormalizedApiFootballResult {
+  const rawStatus = match.fixture?.status?.short;
+  const providerStatus =
+    typeof rawStatus === "string" ? rawStatus.trim().toUpperCase() : "UNKNOWN";
+  if (!COMPLETED_API_FOOTBALL_STATUSES.has(providerStatus)) {
+    return {
+      providerStatus,
+      halfTime: null,
+      regularTime: null,
+      outcome: "waiting",
+      message: "API-Football 尚未明确标记比赛结束，暂不结算。",
+    };
+  }
+
+  const fulltime = match.score?.fulltime;
+  const halftime = match.score?.halftime ?? null;
+  const scoreError = matchScoreValidationError(
+    { home: fulltime?.home, away: fulltime?.away },
+    halftime,
+  );
+  if (scoreError) {
+    return {
+      providerStatus,
+      halfTime: null,
+      regularTime: null,
+      outcome: "manual_review",
+      message: `API-Football 的90分钟比分未通过校验：${scoreError} 禁止用 goals、加时或点球比分替代。`,
+    };
+  }
+
+  return {
+    providerStatus,
+    halfTime: halftime
+      ? { home: halftime.home as number, away: halftime.away as number }
+      : null,
+    regularTime: {
+      home: fulltime!.home as number,
+      away: fulltime!.away as number,
+    },
+    outcome: "ready",
+    message: "已取得90分钟常规时间及伤停补时比分。",
+  };
+}
+
+function normalizedApiFootballTeamName(value: unknown): string {
+  return typeof value === "string"
+    ? value.toLowerCase().replace(/[^a-z0-9]/g, "")
+    : "";
+}
+
+export interface ApiFootballFixtureDiscoveryInput {
+  kickoffAt: string;
+  homeTeamEnglishName: string;
+  awayTeamEnglishName: string;
+  teamsArePlaceholders?: boolean;
+}
+
+export function findApiFootballFixture(
+  matches: ApiFootballFixturePayload[],
+  input: ApiFootballFixtureDiscoveryInput,
+): ApiFootballFixturePayload | null {
+  const kickoffMs = Date.parse(input.kickoffAt);
+  const timeMatches = matches.filter((match) => {
+    const fixtureId = match.fixture?.id;
+    const date = match.fixture?.date;
+    return (
+      Number.isSafeInteger(fixtureId) &&
+      typeof date === "string" &&
+      Math.abs(Date.parse(date) - kickoffMs) <= 90 * 60 * 1_000
+    );
+  });
+  if (timeMatches.length === 0) return null;
+
+  if (!input.teamsArePlaceholders) {
+    const home = normalizedApiFootballTeamName(input.homeTeamEnglishName);
+    const away = normalizedApiFootballTeamName(input.awayTeamEnglishName);
+    const exact = timeMatches.find(
+      (match) =>
+        normalizedApiFootballTeamName(match.teams?.home?.name) === home &&
+        normalizedApiFootballTeamName(match.teams?.away?.name) === away,
+    );
+    if (exact) return exact;
+  }
+  return timeMatches.length === 1 ? timeMatches[0]! : null;
+}
+
 export type ResultSource =
   | "external-provider"
+  | "api-football"
   | "football-data.org"
   | "manual";
 
@@ -305,7 +436,7 @@ export const FIXTURES: readonly SeedFixture[] = [
     kickoffAt: "2026-07-15T03:00:00+08:00",
     lockAt: "2026-07-15T01:00:00+08:00",
     resultSyncDueAt: "2026-07-15T07:00:00+08:00",
-    providerMatchId: null,
+    providerMatchId: "1585131",
     recordStatus: "scheduled",
   },
   {

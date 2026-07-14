@@ -1971,6 +1971,103 @@ select:disabled {
   padding: 7px 12px 5px;
 }
 
+.wb-provider-shell {
+  position: relative;
+  background:
+    radial-gradient(circle at 50% -45%, oklch(0.49 0.11 151 / 0.28), transparent 65%),
+    oklch(0.235 0.052 155);
+}
+
+.wb-provider-bar {
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 10px;
+  border-bottom: 1px solid oklch(1 0 0 / 0.08);
+  background: oklch(0.14 0.025 158 / 0.42);
+  color: oklch(0.76 0.022 151);
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.wb-provider-bar > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: oklch(0.91 0.026 151);
+  letter-spacing: 0.03em;
+}
+
+.wb-provider-bar i {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--gold);
+  box-shadow: 0 0 0 3px oklch(0.78 0.14 82 / 0.12);
+}
+
+.wb-provider-fallback > p {
+  display: flex;
+  min-height: 22px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 0;
+  border-top: 1px solid oklch(1 0 0 / 0.07);
+  color: oklch(0.71 0.02 151);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.wb-provider-fallback > p span {
+  color: var(--gold);
+}
+
+.wb-provider-widget {
+  min-height: 118px;
+  max-height: 168px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: oklch(0.97 0.008 104);
+  color: var(--ink);
+  scrollbar-width: thin;
+}
+
+.wb-provider-widget > api-sports-widget {
+  display: block;
+  min-height: 118px;
+}
+
+api-sports-widget[data-theme="WorldCup"] {
+  --primary-color: #174e38;
+  --success-color: #1b7f55;
+  --warning-color: #d7a934;
+  --danger-color: #b74237;
+  --light-color: #f5f0e5;
+  --home-color: #174e38;
+  --away-color: #9d7528;
+  --text-color: #18342b;
+  --text-color-info: #66756f;
+  --background-color: #f8f5ed;
+  --button-text-color: #ffffff;
+  --primary-font-size: 0.72rem;
+  --secondary-font-size: 0.66rem;
+  --button-font-size: 0.66rem;
+  --title-font-size: 0.74rem;
+  --header-text-transform: none;
+  --button-text-transform: none;
+  --title-text-transform: none;
+  --border: 1px solid #e6dfd0;
+  --game-height: 142px;
+  --score-size: 1.45rem;
+  --flag-size: 18px;
+  --teams-logo-size: 28px;
+  --teams-logo-size-xl: 38px;
+  --hover: #eee7d8;
+}
+
 .wb-team {
   display: flex;
   min-width: 0;
@@ -3239,6 +3336,15 @@ select:disabled {
   .wb-ranking-wrap {
     max-height: 102px;
   }
+
+  .wb-provider-bar small,
+  .wb-provider-fallback > p {
+    display: none;
+  }
+
+  .wb-provider-widget {
+    max-height: 128px;
+  }
 }
 
 @media (max-width: 370px) {
@@ -3262,6 +3368,13 @@ select:disabled {
 
   .wb-carousel-heading p {
     display: none;
+  }
+
+  .wb-provider-bar small {
+    overflow: hidden;
+    max-width: 44%;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 
