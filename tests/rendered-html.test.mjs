@@ -56,3 +56,77 @@ test("pool workbench includes avatar bets, frozen regulation score, and podium U
     ["bo.png", "dong.png", "gao.png", "kang.png", "qiu.png", "ye.png", "zhao.png"],
   );
 });
+
+test("initial ledger load is not blocked by result synchronization", async () => {
+  const workbench = await readFile(
+    new URL("../app/components/PoolWorkbench.tsx", import.meta.url),
+    "utf8",
+  );
+  const flowStart = workbench.indexOf("async function loadLedgerThenSyncResults()");
+  const flowEnd = workbench.indexOf("async function pollLiveFixture()", flowStart);
+
+  assert.ok(flowStart >= 0 && flowEnd > flowStart, "initial loading flow should be explicit");
+  const initialFlow = workbench.slice(flowStart, flowEnd);
+  const firstLedgerLoad = initialFlow.indexOf("await refreshState(signal)");
+  const resultSync = initialFlow.indexOf('fetch("/api/results/sync"');
+  const refreshedLedger = initialFlow.indexOf(
+    "await refreshState(signal)",
+    firstLedgerLoad + 1,
+  );
+
+  assert.ok(firstLedgerLoad >= 0, "persisted ledger should load immediately");
+  assert.ok(resultSync > firstLedgerLoad, "result synchronization must start after the first ledger load");
+  assert.ok(refreshedLedger > resultSync, "successful synchronization should refresh the ledger once");
+  assert.doesNotMatch(initialFlow, /\.then\(\(\) => fetch\("\/api\/state"/);
+});
+
+test("fixture snapping and static provider widgets keep their reuse invariants", async () => {
+  const [workbench, widget, css] = await Promise.all([
+    readFile(new URL("../app/components/PoolWorkbench.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/ApiSportsGameWidget.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(css, /--wb-card-width:\s*min\(88vw, 540px\)/);
+  assert.match(css, /--wb-track-edge:[^;]*var\(--wb-card-width\)/);
+  assert.match(css, /flex:\s*0 0 var\(--wb-card-width\)/);
+
+  const scrollHandler = workbench.slice(
+    workbench.indexOf("function handleTrackScroll()"),
+    workbench.indexOf("function addDraftParticipant"),
+  );
+  assert.match(scrollHandler, /window\.setTimeout/);
+  assert.ok(
+    scrollHandler.indexOf("window.setTimeout") < scrollHandler.indexOf("setSelectedFixtureId"),
+    "the selected fixture should change only after scroll settling",
+  );
+
+  const reuseGuard = widget.indexOf("retained.fixtureId === fixtureId");
+  const providerFetch = widget.indexOf("void fetch(`/api/api-football/fixtures");
+  assert.ok(reuseGuard >= 0 && providerFetch > reuseGuard, "a retained widget should bypass the provider preflight");
+  assert.match(widget, /retained\?\.phase === "live"/);
+  assert.doesNotMatch(
+    widget,
+    /controller\.abort\(\);\s*host\?\.replaceChildren\(\);/,
+    "dependency cleanup should not detach a reusable static widget",
+  );
+});
+
+test("pool totals expose an accessible per-person contribution sheet", async () => {
+  const [workbench, css] = await Promise.all([
+    readFile(new URL("../app/components/PoolWorkbench.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.equal(
+    [...workbench.matchAll(/onClick=\{\(\) => setSheet\("pool"\)\}/g)].length,
+    2,
+    "both pool total and participant count should open the same detail sheet",
+  );
+  assert.match(workbench, /aria-haspopup="dialog"/);
+  assert.match(workbench, /selectedFixture\?\.settlement\?\.poolBeforeCents \?\? carryBefore/);
+  assert.match(workbench, /money\(entry\.stakeCents\)[\s\S]*entry\.betCount/);
+  assert.match(workbench, /ParticipantAvatar[\s\S]*wb-avatar-pool/);
+  assert.match(css, /\.wb-stat-link[\s\S]*min-height:\s*48px/);
+  assert.match(css, /\.wb-pool-people/);
+});

@@ -20,7 +20,7 @@ import { ParticipantAvatar } from "./ParticipantAvatar";
 import { PoolPodium, type PoolRankingRow } from "./PoolPodium";
 
 type DraftSlots = Partial<Record<ParticipantId, Array<OddsOffer | null>>>;
-type SheetName = "people" | "odds" | "confirm" | "manage" | "rules" | null;
+type SheetName = "pool" | "people" | "odds" | "confirm" | "manage" | "rules" | null;
 
 const STAGE_LABEL: Record<Fixture["stage"], string> = {
   semi_final: "半决赛",
@@ -62,6 +62,7 @@ const HALF_FULL_ORDER = [
 ];
 const LIVE_SYNC_INTERVAL_MS = 180_000;
 const LIVE_SYNC_CLOCK_MS = 30_000;
+const CAROUSEL_SETTLE_MS = 140;
 
 function unwrapState(payload: unknown): AppState {
   return (payload as { state?: AppState }).state ?? (payload as AppState);
@@ -170,6 +171,16 @@ function DialogShell({
   children: ReactNode;
   className?: string;
 }) {
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    const returnFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    closeButtonRef.current?.focus();
+    return () => returnFocus?.focus();
+  }, []);
+
   return (
     <div className="wb-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className={`wb-sheet ${className}`} role="dialog" aria-modal="true" aria-labelledby="wb-dialog-title">
@@ -179,7 +190,7 @@ function DialogShell({
             {eyebrow && <p>{eyebrow}</p>}
             <h2 id="wb-dialog-title">{title}</h2>
           </div>
-          <button className="wb-icon-button" type="button" onClick={onClose} aria-label="关闭">×</button>
+          <button ref={closeButtonRef} className="wb-icon-button" type="button" onClick={onClose} aria-label="关闭">×</button>
         </header>
         {children}
       </section>
@@ -250,6 +261,7 @@ export function PoolWorkbench() {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const didInitialScroll = useRef(false);
   const scrollFrame = useRef<number | null>(null);
+  const scrollSettleTimer = useRef<number | null>(null);
   const stateRef = useRef(state);
   const syncInFlightRef = useRef(false);
   const lastResultSyncAtRef = useRef(0);
@@ -263,6 +275,20 @@ export function PoolWorkbench() {
     [selectedFixture, state.entries],
   );
   const fixtureStake = selectedEntries.reduce((sum, entry) => sum + entry.stakeCents, 0);
+  const fixtureBetCount = selectedEntries.reduce((sum, entry) => sum + entry.betCount, 0);
+  const participantBreakdown = useMemo(
+    () => selectedEntries
+      .map((entry) => {
+        const participant = state.participants.find((person) => person.id === entry.participantId);
+        return {
+          ...entry,
+          name: participant?.name ?? entry.participantId,
+          displayOrder: participant?.displayOrder ?? 99,
+        };
+      })
+      .sort((a, b) => a.displayOrder - b.displayOrder),
+    [selectedEntries, state.participants],
+  );
 
   const carryBefore = useMemo(() => {
     if (!selectedFixture) return 0;
@@ -275,6 +301,7 @@ export function PoolWorkbench() {
   }, [fixtures, selectedFixture]);
 
   const fixturePool = selectedFixture?.settlement?.eligiblePoolCents ?? carryBefore + fixtureStake;
+  const carriedIn = selectedFixture?.settlement?.poolBeforeCents ?? carryBefore;
   const rollover = selectedFixture?.settlement
     ? Math.max(0, selectedFixture.settlement.eligiblePoolCents - selectedFixture.settlement.paidCents)
     : carryBefore;
@@ -314,10 +341,11 @@ export function PoolWorkbench() {
   const pickerFixture = selectedFixture;
   const pickerGroups = useMemo(() => groupedOffers(pickerFixture?.offers ?? []), [pickerFixture]);
 
-  const refreshState = useCallback(async (): Promise<AppState> => {
-    const response = await fetch("/api/state", { cache: "no-store" });
+  const refreshState = useCallback(async (signal?: AbortSignal): Promise<AppState> => {
+    const response = await fetch("/api/state", { cache: "no-store", signal });
     if (!response.ok) throw new Error(await responseError(response));
     const next = unwrapState(await response.json());
+    if (signal?.aborted) return next;
     stateRef.current = next;
     setState(next);
     setSelectedFixtureId((current) => current ?? next.activeFixtureId ?? next.fixtures[0]?.id ?? null);
@@ -329,30 +357,58 @@ export function PoolWorkbench() {
   }, [state]);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    const { signal } = controller;
     const nowMs = Date.now();
     lastResultSyncAtRef.current = nowMs;
     liveSyncFixtureIdRef.current = fixtureInLiveSyncWindow(stateRef.current, nowMs)?.id ?? null;
-    // Local mode cannot run while the browser is closed, so opening the app
-    // first performs a provider-neutral catch-up for any due fixtures.
-    void fetch("/api/results/sync", { cache: "no-store" })
-      .catch(() => null)
-      .then(() => fetch("/api/state", { cache: "no-store" }))
-      .then(async (response) => {
-        if (!response.ok) throw new Error(await responseError(response));
-        return unwrapState(await response.json());
-      })
-      .then((next) => {
-        if (cancelled) return;
-        stateRef.current = next;
-        setState(next);
-        setSelectedFixtureId(next.activeFixtureId ?? next.fixtures[0]?.id ?? null);
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : "本地账本暂时无法读取");
-      });
-    return () => { cancelled = true; };
-  }, []);
+    syncInFlightRef.current = true;
+
+    async function loadLedgerThenSyncResults() {
+      // Show the persisted ledger before waiting on the slower provider catch-up.
+      try {
+        const persistedState = await refreshState(signal);
+        if (!signal.aborted) {
+          liveSyncFixtureIdRef.current =
+            fixtureInLiveSyncWindow(persistedState, Date.now())?.id ?? null;
+        }
+      } catch (reason: unknown) {
+        if (!signal.aborted) {
+          setError(reason instanceof Error ? reason.message : "本地账本暂时无法读取");
+        }
+      }
+      if (signal.aborted) return;
+
+      // Local mode cannot run while the browser is closed, so opening the app
+      // still catches up due fixtures in the background and then refreshes once.
+      try {
+        const response = await fetch("/api/results/sync", {
+          cache: "no-store",
+          signal,
+        });
+        if (response.ok && !signal.aborted) {
+          const refreshedState = await refreshState(signal);
+          if (!signal.aborted) {
+            liveSyncFixtureIdRef.current =
+              fixtureInLiveSyncWindow(refreshedState, Date.now())?.id ?? null;
+          }
+        }
+      } catch {
+        // Keep the already loaded ledger usable. Live polling or a later open
+        // will retry without turning provider latency into a page-load error.
+      } finally {
+        if (!signal.aborted) lastResultSyncAtRef.current = Date.now();
+      }
+    }
+
+    void loadLedgerThenSyncResults().finally(() => {
+      if (!signal.aborted) syncInFlightRef.current = false;
+    });
+    return () => {
+      controller.abort();
+      syncInFlightRef.current = false;
+    };
+  }, [refreshState]);
 
   useEffect(() => {
     let cancelled = false;
@@ -421,24 +477,57 @@ export function PoolWorkbench() {
 
   useEffect(() => {
     if (!selectedFixtureId || didInitialScroll.current) return;
+    const track = trackRef.current;
     const element = trackRef.current?.querySelector<HTMLElement>(`[data-fixture-id="${selectedFixtureId}"]`);
-    if (!element) return;
+    if (!track || !element) return;
     didInitialScroll.current = true;
-    element.scrollIntoView({ behavior: "instant", block: "nearest", inline: "center" });
+    const trackBox = track.getBoundingClientRect();
+    const cardBox = element.getBoundingClientRect();
+    track.scrollBy({
+      left: cardBox.left + cardBox.width / 2 - (trackBox.left + trackBox.width / 2),
+      behavior: "auto",
+    });
   }, [selectedFixtureId, fixtures.length]);
 
+  useEffect(() => () => {
+    if (scrollSettleTimer.current !== null) {
+      window.clearTimeout(scrollSettleTimer.current);
+    }
+    if (scrollFrame.current !== null) {
+      window.cancelAnimationFrame(scrollFrame.current);
+    }
+  }, []);
+
   function handleTrackScroll() {
-    if (scrollFrame.current !== null) window.cancelAnimationFrame(scrollFrame.current);
-    scrollFrame.current = window.requestAnimationFrame(() => {
-      const track = trackRef.current;
-      if (!track) return;
-      const center = track.getBoundingClientRect().left + track.clientWidth / 2;
-      const cards = [...track.querySelectorAll<HTMLElement>("[data-fixture-id]")];
-      const nearest = cards.sort(
-        (a, b) => Math.abs(a.getBoundingClientRect().left + a.clientWidth / 2 - center) - Math.abs(b.getBoundingClientRect().left + b.clientWidth / 2 - center),
-      )[0];
-      if (nearest?.dataset.fixtureId) setSelectedFixtureId(nearest.dataset.fixtureId);
-    });
+    if (scrollFrame.current !== null) {
+      window.cancelAnimationFrame(scrollFrame.current);
+      scrollFrame.current = null;
+    }
+    if (scrollSettleTimer.current !== null) {
+      window.clearTimeout(scrollSettleTimer.current);
+    }
+    scrollSettleTimer.current = window.setTimeout(() => {
+      scrollFrame.current = window.requestAnimationFrame(() => {
+        scrollFrame.current = null;
+        const track = trackRef.current;
+        if (!track) return;
+        const trackBox = track.getBoundingClientRect();
+        const center = trackBox.left + trackBox.width / 2;
+        const cards = [...track.querySelectorAll<HTMLElement>("[data-fixture-id]")];
+        const nearest = cards.reduce<HTMLElement | null>((closest, card) => {
+          if (!closest) return card;
+          const cardBox = card.getBoundingClientRect();
+          const closestBox = closest.getBoundingClientRect();
+          const distance = Math.abs(cardBox.left + cardBox.width / 2 - center);
+          const closestDistance = Math.abs(closestBox.left + closestBox.width / 2 - center);
+          return distance < closestDistance ? card : closest;
+        }, null);
+        if (nearest?.dataset.fixtureId) {
+          setSelectedFixtureId(nearest.dataset.fixtureId);
+        }
+      });
+      scrollSettleTimer.current = null;
+    }, CAROUSEL_SETTLE_MS);
   }
 
   function addDraftParticipant(participantId: ParticipantId) {
@@ -505,6 +594,12 @@ export function PoolWorkbench() {
   }
 
   async function syncResults() {
+    if (syncInFlightRef.current) {
+      setToast("正在检查赛果，请稍候");
+      return;
+    }
+    syncInFlightRef.current = true;
+    lastResultSyncAtRef.current = Date.now();
     setBusy(true);
     setError(null);
     try {
@@ -515,6 +610,8 @@ export function PoolWorkbench() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "同步失败");
     } finally {
+      lastResultSyncAtRef.current = Date.now();
+      syncInFlightRef.current = false;
       setBusy(false);
     }
   }
@@ -657,8 +754,24 @@ export function PoolWorkbench() {
             <small>仅常规时间＋伤停补时<br />不含加时与点球</small>
           </div>
           <div className="wb-match-stats">
-            <div><span>本场总奖池</span><strong>{money(fixturePool)}</strong></div>
-            <div><span>参与人数</span><strong>{selectedEntries.length}<small> / 7</small></strong></div>
+            <button
+              className="wb-stat-link"
+              type="button"
+              aria-haspopup="dialog"
+              aria-label={`本场总奖池 ${money(fixturePool)}，查看${selectedEntries.length}人金额明细`}
+              onClick={() => setSheet("pool")}
+            >
+              <span>本场总奖池</span><strong>{money(fixturePool)}</strong>
+            </button>
+            <button
+              className="wb-stat-link"
+              type="button"
+              aria-haspopup="dialog"
+              aria-label={`参与人数${selectedEntries.length}人，共7人，查看参与明细`}
+              onClick={() => setSheet("pool")}
+            >
+              <span>参与人数</span><strong>{selectedEntries.length}<small> / 7</small></strong>
+            </button>
             <div><span>{selectedFixture.settlement ? "本场滚存" : "上场滚入"}</span><strong>{money(rollover)}</strong></div>
           </div>
 
@@ -779,6 +892,47 @@ export function PoolWorkbench() {
         </section>
         {error && <button className="wb-error" type="button" onClick={() => setError(null)}>{error}<span>×</span></button>}
       </main>
+
+      {sheet === "pool" && (
+        <DialogShell
+          className="wb-pool-detail-sheet"
+          title="本场奖池明细"
+          eyebrow={`${selectedFixture.matchCode} · ${selectedFixture.homeTeam.name} vs ${selectedFixture.awayTeam.name}`}
+          onClose={() => setSheet(null)}
+        >
+          <div className="wb-sheet-body wb-pool-detail">
+            <div className="wb-pool-detail-summary">
+              <div><span>本场总奖池</span><strong>{money(fixturePool)}</strong></div>
+              <div><span>参与</span><strong>{selectedEntries.length}人 · {fixtureBetCount}注</strong></div>
+            </div>
+            {carriedIn > 0 && (
+              <p className="wb-pool-carry"><span>上场滚入</span><strong>{money(carriedIn)}</strong><small>已计入本场总奖池</small></p>
+            )}
+            <div className="wb-pool-detail-heading">
+              <strong>每人投入</strong><span>本场合计 {money(fixtureStake)}</span>
+            </div>
+            {participantBreakdown.length ? (
+              <ul className="wb-pool-people">
+                {participantBreakdown.map((entry) => (
+                  <li key={entry.id}>
+                    <span>
+                      <ParticipantAvatar participantId={entry.participantId} className="wb-avatar-pool" />
+                      <b>{entry.name}</b>
+                    </span>
+                    <strong>{money(entry.stakeCents)}<small>，{entry.betCount}注</small></strong>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="wb-pool-empty">
+                <b>{carriedIn > 0 ? "本场暂时没有参与人" : "还没有人加入本场"}</b>
+                <p>{carriedIn > 0 ? `当前 ${money(fixturePool)} 全部来自上场滚入。` : "锁定注单后，金额和注数会显示在这里。"}</p>
+              </div>
+            )}
+            <p className="wb-pool-detail-note">仅统计已锁定参与人，未锁定的选择不计入奖池。</p>
+          </div>
+        </DialogShell>
+      )}
 
       {sheet === "people" && (
         <DialogShell title="选择参与人" eyebrow={`${selectedFixture.homeTeam.name} vs ${selectedFixture.awayTeam.name}`} onClose={() => setSheet(null)}>

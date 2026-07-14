@@ -12,12 +12,19 @@ const WIDGET_CONFIG_ID = "api-sports-widget-config";
 const WIDGET_SCRIPT_URL = "https://widgets.api-sports.io/3.1.0/widgets.js";
 
 type WidgetState = "checking" | "ready" | "fallback";
+type WidgetPhase = "pregame" | "live" | "settled";
 
 interface WidgetSnapshot {
   fixtureId: string | null;
-  refresh: string;
+  phase: WidgetPhase;
   state: WidgetState;
   reason: string;
+}
+
+interface RetainedWidget {
+  fixtureId: string;
+  phase: WidgetPhase;
+  element: HTMLElement;
 }
 
 interface ApiEnvelope {
@@ -115,13 +122,14 @@ async function ensureWidgetConfig(refresh: string): Promise<void> {
   document.body.append(config);
 }
 
-function createGameWidget(host: HTMLDivElement, fixtureId: string, refresh: string) {
+function createGameWidget(host: HTMLDivElement, fixtureId: string, refresh: string): HTMLElement {
   const game = document.createElement("api-sports-widget");
   game.setAttribute("data-type", "game");
   game.setAttribute("data-game-id", fixtureId);
   game.setAttribute("data-refresh", refresh);
   game.setAttribute("data-theme", "WorldCup");
   host.replaceChildren(game);
+  return game;
 }
 
 export function ApiSportsGameWidget({
@@ -138,12 +146,7 @@ export function ApiSportsGameWidget({
   fallback: ReactNode;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const [snapshot, setSnapshot] = useState<WidgetSnapshot>({
-    fixtureId,
-    refresh: "false",
-    state: fixtureId ? "checking" : "fallback",
-    reason: fixtureId ? "正在连接官方赛况…" : "比赛数据 ID 尚未开放",
-  });
+  const retainedWidgetRef = useRef<RetainedWidget | null>(null);
   const [clockMs, setClockMs] = useState(() => Date.parse(currentTime));
   const kickoffMs = Date.parse(kickoffAt);
   const liveRefresh =
@@ -151,9 +154,16 @@ export function ApiSportsGameWidget({
     Number.isFinite(kickoffMs) &&
     clockMs >= kickoffMs &&
     clockMs < kickoffMs + 3 * 60 * 60 * 1_000;
-  const refresh = liveRefresh ? "180" : "false";
+  const phase: WidgetPhase = settled ? "settled" : liveRefresh ? "live" : "pregame";
+  const refresh = phase === "live" ? "180" : "false";
+  const [snapshot, setSnapshot] = useState<WidgetSnapshot>({
+    fixtureId,
+    phase,
+    state: fixtureId ? "checking" : "fallback",
+    reason: fixtureId ? "正在连接官方赛况…" : "比赛数据 ID 尚未开放",
+  });
   const snapshotIsCurrent =
-    snapshot.fixtureId === fixtureId && snapshot.refresh === refresh;
+    snapshot.fixtureId === fixtureId && snapshot.phase === phase;
   const widgetState =
     snapshotIsCurrent
       ? snapshot.state
@@ -172,17 +182,45 @@ export function ApiSportsGameWidget({
     return () => window.clearInterval(timer);
   }, []);
 
+  useEffect(() => () => {
+    hostRef.current?.replaceChildren();
+    retainedWidgetRef.current = null;
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     const controller = new AbortController();
     const host = hostRef.current;
-    host?.replaceChildren();
+    const retained = retainedWidgetRef.current;
 
     if (!fixtureId) {
+      // Hidden live widgets would keep the vendor refresh loop running.
+      // Static widgets stay connected so returning from an adjacent fixture
+      // is instant and does not repeat the proxy or vendor request.
+      if (retained?.phase === "live") {
+        host?.replaceChildren();
+        retainedWidgetRef.current = null;
+      }
       return () => {
         cancelled = true;
+        controller.abort();
       };
     }
+
+    if (
+      retained &&
+      retained.fixtureId === fixtureId &&
+      retained.phase === phase &&
+      host?.contains(retained.element)
+    ) {
+      return () => {
+        cancelled = true;
+        controller.abort();
+      };
+    }
+
+    host?.replaceChildren();
+    retainedWidgetRef.current = null;
 
     void fetch(`/api/api-football/fixtures?id=${encodeURIComponent(fixtureId)}`, {
       headers: { Accept: "application/json" },
@@ -206,14 +244,15 @@ export function ApiSportsGameWidget({
         }
         await ensureWidgetConfig(refresh);
         if (cancelled || !hostRef.current) return;
-        createGameWidget(hostRef.current, fixtureId, refresh);
-        setSnapshot({ fixtureId, refresh, state: "ready", reason: "" });
+        const element = createGameWidget(hostRef.current, fixtureId, refresh);
+        retainedWidgetRef.current = { fixtureId, phase, element };
+        setSnapshot({ fixtureId, phase, state: "ready", reason: "" });
       })
       .catch((reason: unknown) => {
         if (cancelled || (reason instanceof DOMException && reason.name === "AbortError")) return;
         setSnapshot({
           fixtureId,
-          refresh,
+          phase,
           state: "fallback",
           reason: reason instanceof Error ? reason.message : "数据赛况暂时不可用",
         });
@@ -222,9 +261,8 @@ export function ApiSportsGameWidget({
     return () => {
       cancelled = true;
       controller.abort();
-      host?.replaceChildren();
     };
-  }, [fixtureId, refresh]);
+  }, [fixtureId, phase, refresh]);
 
   return (
     <div
