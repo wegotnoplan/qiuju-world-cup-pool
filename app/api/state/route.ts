@@ -116,11 +116,42 @@ async function ensureSeedData(db: Database) {
   // Preserve IDs entered by an administrator, but backfill provider IDs that
   // became known after an existing local D1 database had already been seeded.
   for (const fixture of FIXTURES) {
-    if (!fixture.providerMatchId) continue;
-    await db
-      .update(fixtures)
-      .set({ providerMatchId: fixture.providerMatchId })
-      .where(and(eq(fixtures.id, fixture.id), isNull(fixtures.providerMatchId)));
+    if (fixture.providerMatchId) {
+      await db
+        .update(fixtures)
+        .set({ providerMatchId: fixture.providerMatchId })
+        .where(and(eq(fixtures.id, fixture.id), isNull(fixtures.providerMatchId)));
+    }
+
+    // A later seed may resolve a knockout placeholder. Only replace a side
+    // that is still explicitly marked as a placeholder, so an administrator's
+    // already-real team data is never overwritten by seed synchronization.
+    if (!fixture.homeTeam.placeholder) {
+      await db
+        .update(fixtures)
+        .set({
+          homeTeamCode: fixture.homeTeam.code,
+          homeTeamName: fixture.homeTeam.name,
+          homeTeamEnglishName: fixture.homeTeam.englishName,
+          homeTeamPlaceholder: false,
+        })
+        .where(
+          and(eq(fixtures.id, fixture.id), eq(fixtures.homeTeamPlaceholder, true)),
+        );
+    }
+    if (!fixture.awayTeam.placeholder) {
+      await db
+        .update(fixtures)
+        .set({
+          awayTeamCode: fixture.awayTeam.code,
+          awayTeamName: fixture.awayTeam.name,
+          awayTeamEnglishName: fixture.awayTeam.englishName,
+          awayTeamPlaceholder: false,
+        })
+        .where(
+          and(eq(fixtures.id, fixture.id), eq(fixtures.awayTeamPlaceholder, true)),
+        );
+    }
   }
 
   // D1 has a conservative bound-parameter limit. Read existing IDs once and
@@ -327,6 +358,8 @@ function activeFixtureForRows<
     lockAt: string;
     sequence: number;
     status: string;
+    homeTeamPlaceholder: boolean;
+    awayTeamPlaceholder: boolean;
   }
 >(fixtureRows: T[], now: string): T | null {
   const nowMs = Date.parse(now);
@@ -335,6 +368,8 @@ function activeFixtureForRows<
     .sort((a, b) => a.sequence - b.sequence)[0];
   return next &&
     next.status === "scheduled" &&
+    !next.homeTeamPlaceholder &&
+    !next.awayTeamPlaceholder &&
     Date.parse(next.kickoffAt) > nowMs &&
     nowMs < Date.parse(next.lockAt)
     ? next
@@ -475,6 +510,13 @@ async function lockEntry(
   }
 
   const fixtureRows = await db.select().from(fixtures).orderBy(asc(fixtures.sequence));
+  const requestedFixture = fixtureRows.find((fixture) => fixture.id === payload.fixtureId);
+  if (
+    requestedFixture &&
+    (requestedFixture.homeTeamPlaceholder || requestedFixture.awayTeamPlaceholder)
+  ) {
+    badRequest("本场对阵尚未确认，暂不能下注。", 423);
+  }
   const activeFixture = activeFixtureForRows(fixtureRows, now);
   if (!activeFixture || activeFixture.id !== payload.fixtureId) {
     badRequest("本场当前不可下注：只有下一场未开赛比赛可操作，且开赛前2小时锁定。", 423);
@@ -484,6 +526,9 @@ async function lockEntry(
     .select()
     .from(oddsOffers)
     .where(and(eq(oddsOffers.fixtureId, payload.fixtureId), eq(oddsOffers.active, true)));
+  if (availableOffers.length === 0) {
+    badRequest("本场赔率尚未配置，暂不能下注。", 423);
+  }
   const selectedOffers = resolveOffers(payload.selections, availableOffers);
   const participantExists = await db
     .select({ id: participants.id })

@@ -35,3 +35,23 @@ test("starter preview code and dependency are removed", async () => {
   assert.doesNotMatch(page, /_sites-preview|codex-preview/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 });
+
+test("pool workbench includes avatar bets, frozen regulation score, and podium UI", async () => {
+  const [workbench, podium, avatarData, avatarFiles] = await Promise.all([
+    readFile(new URL("../app/components/PoolWorkbench.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/PoolPodium.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../lib/participant-avatars.ts", import.meta.url), "utf8"),
+    readdir(new URL("../public/avatars/", import.meta.url)),
+  ]);
+
+  assert.match(workbench, /群内结算基准/);
+  assert.match(workbench, /下注人[\s\S]*项目[\s\S]*赔率/);
+  assert.match(workbench, /不含加时与点球/);
+  assert.match(workbench, /等待对阵与赔率/);
+  assert.match(podium, /本场中奖榜领奖台/);
+  assert.match(avatarData, /\/avatars\/gao\.png/);
+  assert.deepEqual(
+    avatarFiles.filter((name) => name.endsWith(".png")).sort(),
+    ["bo.png", "dong.png", "gao.png", "kang.png", "qiu.png", "ye.png", "zhao.png"],
+  );
+});

@@ -121,10 +121,33 @@ test("API-Football does not settle before an explicit completed status", () => {
 test("keeps later fixtures locked until the prior fixture settles", () => {
   const now = "2026-07-14T12:00:00+08:00";
   const seed = createSeedState(now);
-  assert.equal(seed.activeFixtureId, "wc2026-m101");
+  assert.equal(seed.activeFixtureId, null, "fixtures without active odds stay locked");
+  const configuredFixtures = seed.fixtures.map((fixture, index) =>
+    index < 2
+      ? {
+          ...fixture,
+          offers: [
+            {
+              id: `${fixture.id}-test-home`,
+              fixtureId: fixture.id,
+              marketType: "MATCH_RESULT",
+              selectionCode: "HOME",
+              label: `${fixture.homeTeam.name}胜`,
+              odds: 2,
+              rulesText: "90分钟",
+              source: "test",
+              active: true,
+              uploadedAt: now,
+            },
+          ],
+        }
+      : fixture,
+  );
+  const ready = deriveFixtureStates(configuredFixtures, now);
+  assert.equal(ready.activeFixtureId, "wc2026-m101");
 
   const waiting = deriveFixtureStates(
-    seed.fixtures.map((fixture, index) =>
+    configuredFixtures.map((fixture, index) =>
       index === 0 ? { ...fixture, recordStatus: "review_required" } : fixture,
     ),
     now,
@@ -132,10 +155,27 @@ test("keeps later fixtures locked until the prior fixture settles", () => {
   assert.equal(waiting.activeFixtureId, null);
 
   const advanced = deriveFixtureStates(
-    seed.fixtures.map((fixture, index) =>
+    configuredFixtures.map((fixture, index) =>
       index === 0 ? { ...fixture, recordStatus: "settled" } : fixture,
     ),
     now,
   );
   assert.equal(advanced.activeFixtureId, "wc2026-m102");
+
+  const placeholdersRemainLocked = deriveFixtureStates(
+    configuredFixtures.map((fixture, index) => ({
+      ...fixture,
+      recordStatus: index < 2 ? "settled" : fixture.recordStatus,
+      offers:
+        index === 2
+          ? [{ ...configuredFixtures[0].offers[0], id: "m103-test", fixtureId: fixture.id }]
+          : fixture.offers,
+    })),
+    now,
+  );
+  assert.equal(
+    placeholdersRemainLocked.activeFixtureId,
+    null,
+    "active odds must not unlock a fixture whose teams are placeholders",
+  );
 });

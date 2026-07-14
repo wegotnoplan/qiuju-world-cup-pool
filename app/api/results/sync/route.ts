@@ -132,11 +132,39 @@ async function ensureSeedData(db: Database) {
     .onConflictDoNothing();
 
   for (const fixture of FIXTURES) {
-    if (!fixture.providerMatchId) continue;
-    await db
-      .update(fixtures)
-      .set({ providerMatchId: fixture.providerMatchId })
-      .where(and(eq(fixtures.id, fixture.id), isNull(fixtures.providerMatchId)));
+    if (fixture.providerMatchId) {
+      await db
+        .update(fixtures)
+        .set({ providerMatchId: fixture.providerMatchId })
+        .where(and(eq(fixtures.id, fixture.id), isNull(fixtures.providerMatchId)));
+    }
+
+    if (!fixture.homeTeam.placeholder) {
+      await db
+        .update(fixtures)
+        .set({
+          homeTeamCode: fixture.homeTeam.code,
+          homeTeamName: fixture.homeTeam.name,
+          homeTeamEnglishName: fixture.homeTeam.englishName,
+          homeTeamPlaceholder: false,
+        })
+        .where(
+          and(eq(fixtures.id, fixture.id), eq(fixtures.homeTeamPlaceholder, true)),
+        );
+    }
+    if (!fixture.awayTeam.placeholder) {
+      await db
+        .update(fixtures)
+        .set({
+          awayTeamCode: fixture.awayTeam.code,
+          awayTeamName: fixture.awayTeam.name,
+          awayTeamEnglishName: fixture.awayTeam.englishName,
+          awayTeamPlaceholder: false,
+        })
+        .where(
+          and(eq(fixtures.id, fixture.id), eq(fixtures.awayTeamPlaceholder, true)),
+        );
+    }
   }
 }
 

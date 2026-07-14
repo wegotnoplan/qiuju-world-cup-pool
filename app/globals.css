@@ -1854,6 +1854,49 @@ select:disabled {
   font: inherit;
 }
 
+.wb-avatar {
+  position: relative;
+  display: block;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border: 1px solid oklch(0.88 0.015 95);
+  border-radius: 14px;
+  background: #fbf8ef;
+  box-shadow: 0 4px 12px oklch(0.24 0.025 100 / 0.09);
+}
+
+.wb-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+  transform: scale(1.08);
+}
+
+.wb-avatar-card {
+  width: 50px;
+  height: 50px;
+}
+
+.wb-avatar-draft {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+}
+
+.wb-avatar-picker {
+  width: 58px;
+  height: 58px;
+}
+
+.wb-avatar-confirm {
+  width: 44px;
+  height: 44px;
+  border-color: oklch(1 0 0 / 0.28);
+  border-radius: 11px;
+}
+
 .wb-topbar {
   z-index: 10;
   display: flex;
@@ -2038,6 +2081,79 @@ select:disabled {
 .wb-provider-widget > api-sports-widget {
   display: block;
   min-height: 118px;
+}
+
+.wb-frozen-score {
+  display: grid;
+  min-height: 48px;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.72fr) 8px minmax(0, 0.78fr) minmax(0, 1.1fr);
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-top: 1px solid oklch(1 0 0 / 0.1);
+  background: oklch(0.18 0.038 156 / 0.86);
+  color: white;
+}
+
+.wb-frozen-score-title span,
+.wb-frozen-score-title b,
+.wb-frozen-score-value span,
+.wb-frozen-score-value strong {
+  display: block;
+}
+
+.wb-frozen-score-title span {
+  color: oklch(0.76 0.022 151);
+  font-size: 9px;
+}
+
+.wb-frozen-score-title b {
+  width: max-content;
+  margin-top: 2px;
+  padding: 2px 5px;
+  border: 1px solid oklch(1 0 0 / 0.14);
+  border-radius: 999px;
+  color: oklch(0.81 0.02 151);
+  font-size: 8px;
+}
+
+.wb-frozen-score[data-frozen="true"] .wb-frozen-score-title b {
+  border-color: oklch(0.82 0.14 84 / 0.55);
+  background: var(--gold);
+  color: var(--ink);
+}
+
+.wb-frozen-score-value {
+  text-align: center;
+}
+
+.wb-frozen-score-value span {
+  color: oklch(0.73 0.02 151);
+  font-size: 8px;
+}
+
+.wb-frozen-score-value strong {
+  margin-top: 1px;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+}
+
+.wb-frozen-score-value.is-regulation strong {
+  color: var(--gold);
+}
+
+.wb-frozen-score-arrow {
+  color: oklch(0.65 0.025 151);
+  font-size: 18px;
+  text-align: center;
+}
+
+.wb-frozen-score > small {
+  color: oklch(0.73 0.02 151);
+  font-size: 8px;
+  line-height: 1.45;
+  text-align: right;
 }
 
 api-sports-widget[data-theme="WorldCup"] {
@@ -2226,7 +2342,7 @@ api-sports-widget[data-theme="WorldCup"] {
 }
 
 .wb-ranking-wrap {
-  max-height: 136px;
+  max-height: 294px;
   overflow-y: auto;
   border-top: 1px solid oklch(1 0 0 / 0.11);
   background: oklch(0.985 0.006 92);
@@ -2254,47 +2370,135 @@ api-sports-widget[data-theme="WorldCup"] {
   font-size: 8px;
 }
 
-.wb-ranking-row {
+.wb-podium-layout {
+  background: var(--surface);
+}
+
+.wb-podium {
+  display: block;
+  width: min(100%, 300px);
+  height: auto;
+  margin: 0 auto;
+  padding: 4px 8px 0;
+}
+
+.wb-podium-avatar-back {
+  fill: #fbf8ef;
+  stroke: #fff;
+  stroke-width: 2;
+}
+
+.wb-podium-rank {
+  fill: oklch(1 0 0 / 0.82);
+  font-size: 25px;
+  font-weight: 950;
+}
+
+.wb-podium .rank-3 .wb-podium-rank {
+  font-size: 20px;
+}
+
+.wb-podium-name {
+  fill: var(--ink);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.wb-podium-prize {
+  fill: oklch(0.28 0.05 75);
+  font-size: 9px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-podium-empty {
+  fill: oklch(0.66 0.015 100);
+  font-size: 8px;
+  font-weight: 750;
+}
+
+.wb-podium-floor {
+  fill: none;
+  stroke: oklch(0.77 0.025 90);
+  stroke-linecap: round;
+  stroke-width: 2;
+}
+
+.wb-podium-stats {
   display: grid;
-  min-height: 26px;
-  grid-template-columns: 1.25fr repeat(3, 0.8fr);
-  align-items: center;
-  padding: 3px 9px;
-  border-bottom: 1px solid var(--line);
+  width: min(100%, 300px);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: -2px auto 5px;
+  color: var(--ink-soft);
+  text-align: center;
+}
+
+.wb-podium-stats > span + span {
+  border-left: 1px solid var(--line);
+}
+
+.wb-podium-stats b,
+.wb-podium-stats small {
+  display: block;
+}
+
+.wb-podium-stats b {
+  color: var(--ink);
+  font-size: 9px;
+}
+
+.wb-podium-stats small {
+  margin-top: 1px;
+  font-size: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-no-winners {
+  margin: 0;
+  padding: 14px 12px;
+  color: var(--ink-soft);
+  font-size: 9px;
+  text-align: center;
+}
+
+.wb-ranking {
+  width: 100%;
+  border-collapse: collapse;
   font-size: 9px;
   font-variant-numeric: tabular-nums;
+}
+
+.wb-ranking th,
+.wb-ranking td {
+  height: 26px;
+  padding: 3px 9px;
+  border-bottom: 1px solid var(--line);
   text-align: right;
 }
 
-.wb-ranking-row > :first-child {
+.wb-ranking th:first-child,
+.wb-ranking td:first-child {
   text-align: left;
 }
 
-.wb-ranking-row i {
-  display: inline-grid;
-  width: 18px;
-  height: 18px;
-  place-items: center;
-  margin-right: 5px;
-  border-radius: 50%;
-  background: var(--surface-muted);
-  font-size: 8px;
-  font-style: normal;
-}
-
-.wb-ranking-head {
-  min-height: 22px;
+.wb-ranking thead th {
+  height: 22px;
   color: var(--ink-soft);
   font-size: 8px;
   font-weight: 700;
 }
 
-.wb-ranking-row [data-positive="true"] {
+.wb-ranking tbody th {
+  color: var(--ink);
+  font-weight: 750;
+}
+
+.wb-ranking [data-positive="true"] {
   color: var(--pitch);
   font-weight: 850;
 }
 
-.wb-ranking-row [data-positive="false"] {
+.wb-ranking [data-positive="false"] {
   color: var(--alert);
   font-weight: 850;
 }
@@ -2454,6 +2658,27 @@ api-sports-widget[data-theme="WorldCup"] {
   overscroll-behavior: contain;
 }
 
+.wb-entry-table-head {
+  position: sticky;
+  z-index: 2;
+  top: -7px;
+  display: grid;
+  min-height: 25px;
+  grid-template-columns: 94px minmax(0, 1fr) 46px;
+  align-items: center;
+  margin: -7px -7px 6px;
+  padding: 4px 14px;
+  border-bottom: 1px solid var(--line);
+  background: oklch(0.965 0.008 96 / 0.97);
+  color: var(--ink-soft);
+  font-size: 8px;
+  font-weight: 850;
+}
+
+.wb-entry-table-head span:last-child {
+  text-align: right;
+}
+
 .wb-locked-entry,
 .wb-draft {
   overflow: hidden;
@@ -2468,77 +2693,94 @@ api-sports-widget[data-theme="WorldCup"] {
   margin-top: 6px;
 }
 
-.wb-locked-entry summary {
-  display: flex;
-  min-height: 44px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 5px 9px;
-  cursor: pointer;
-  list-style: none;
-}
-
-.wb-locked-entry summary::-webkit-details-marker {
-  display: none;
-}
-
-.wb-locked-entry summary > span {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--ink-soft);
-  font-size: 9px;
-}
-
-.wb-locked-entry summary i {
+.wb-locked-entry {
   display: grid;
-  width: 22px;
-  height: 22px;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--pitch-soft);
-  color: var(--pitch);
-  font-size: 9px;
-  font-style: normal;
+  grid-template-columns: 94px minmax(0, 1fr);
 }
 
-.wb-locked-entry summary b {
+.wb-entry-player {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 6px;
+  border-right: 1px solid var(--line);
+  background: var(--paper);
+  text-align: center;
+}
+
+.wb-entry-player > span,
+.wb-entry-player b,
+.wb-entry-player small {
+  display: block;
+}
+
+.wb-entry-player b {
+  overflow: hidden;
   color: var(--ink);
   font-size: 11px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.wb-locked-entry summary em {
+.wb-entry-player small {
+  margin-top: 2px;
+  color: var(--pitch);
   font-size: 8px;
-  font-style: normal;
+  font-weight: 800;
 }
 
-.wb-locked-entry > div {
-  padding: 2px 9px 6px 37px;
-  border-top: 1px solid var(--line);
-  background: var(--paper);
+.wb-entry-bets {
+  min-width: 0;
 }
 
-.wb-locked-entry p,
-.wb-confirm-list p {
-  display: flex;
+.wb-entry-bet {
+  display: grid;
+  min-height: 47px;
+  grid-template-columns: minmax(0, 1fr) 46px;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin: 0;
-  padding: 6px 0;
-  color: var(--ink-soft);
-  font-size: 9px;
+  gap: 6px;
+  padding: 5px 8px 5px 10px;
 }
 
-.wb-locked-entry p + p,
-.wb-confirm-list p + p {
+.wb-entry-bet + .wb-entry-bet {
   border-top: 1px solid var(--line);
 }
 
-.wb-locked-entry p strong {
+.wb-entry-bet span,
+.wb-entry-bet b,
+.wb-entry-bet small {
+  display: block;
+  min-width: 0;
+}
+
+.wb-entry-bet b {
+  overflow: hidden;
   color: var(--ink);
+  font-size: 10px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-entry-bet small {
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--ink-soft);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-entry-bet > strong {
+  color: var(--pitch-deep);
+  font-size: 12px;
+  font-weight: 900;
   font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .wb-draft {
@@ -2552,6 +2794,13 @@ api-sports-widget[data-theme="WorldCup"] {
   justify-content: space-between;
   padding: 4px 7px 4px 10px;
   background: var(--pitch-soft);
+}
+
+.wb-draft-head > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
 }
 
 .wb-draft-head strong {
@@ -2839,9 +3088,11 @@ api-sports-widget[data-theme="WorldCup"] {
 
 .wb-people-grid button {
   display: grid;
-  min-height: 88px;
+  min-height: 112px;
   place-items: center;
-  padding: 8px;
+  align-content: center;
+  gap: 5px;
+  padding: 9px 7px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--surface);
@@ -2850,18 +3101,6 @@ api-sports-widget[data-theme="WorldCup"] {
 
 .wb-people-grid button:disabled {
   opacity: 0.5;
-}
-
-.wb-people-grid button > span {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--pitch-soft);
-  color: var(--pitch-deep);
-  font-size: 11px;
-  font-weight: 900;
 }
 
 .wb-people-grid b {
@@ -3078,9 +3317,16 @@ api-sports-widget[data-theme="WorldCup"] {
   color: white;
 }
 
-.wb-confirm-person span {
+.wb-confirm-person > span {
+  display: flex;
+  align-items: center;
+  gap: 9px;
   font-size: 15px;
   font-weight: 900;
+}
+
+.wb-confirm-person > span > b {
+  font-size: 15px;
 }
 
 .wb-confirm-person strong {
@@ -3097,8 +3343,24 @@ api-sports-widget[data-theme="WorldCup"] {
 }
 
 .wb-confirm-list p {
+  display: flex;
   min-height: 39px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 0;
+  color: var(--ink-soft);
   font-size: 10px;
+}
+
+.wb-confirm-list p + p {
+  border-top: 1px solid var(--line);
+}
+
+.wb-confirm-list p strong {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
 }
 
 .wb-confirm-list strong {
@@ -3322,6 +3584,16 @@ api-sports-widget[data-theme="WorldCup"] {
   .wb-people-grid {
     grid-template-columns: repeat(4, 1fr);
   }
+
+  .wb-podium-layout:has(.wb-ranking) {
+    display: grid;
+    grid-template-columns: minmax(330px, 1.25fr) minmax(280px, 0.9fr);
+    align-items: center;
+  }
+
+  .wb-podium-layout:has(.wb-ranking) .wb-ranking {
+    border-left: 1px solid var(--line);
+  }
 }
 
 @media (max-height: 700px) {
@@ -3334,7 +3606,7 @@ api-sports-widget[data-theme="WorldCup"] {
   }
 
   .wb-ranking-wrap {
-    max-height: 102px;
+    max-height: 172px;
   }
 
   .wb-provider-bar small,
@@ -3375,6 +3647,38 @@ api-sports-widget[data-theme="WorldCup"] {
     max-width: 44%;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .wb-frozen-score {
+    gap: 3px;
+    padding-inline: 7px;
+  }
+
+  .wb-frozen-score-title span,
+  .wb-frozen-score > small {
+    font-size: 7px;
+  }
+
+  .wb-frozen-score-value strong {
+    font-size: 13px;
+  }
+
+  .wb-entry-table-head,
+  .wb-locked-entry {
+    grid-template-columns: 82px minmax(0, 1fr);
+  }
+
+  .wb-entry-table-head {
+    grid-template-columns: 82px minmax(0, 1fr) 42px;
+  }
+
+  .wb-entry-bet {
+    grid-template-columns: minmax(0, 1fr) 42px;
+  }
+
+  .wb-avatar-card {
+    width: 44px;
+    height: 44px;
   }
 }
 

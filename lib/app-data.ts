@@ -531,8 +531,15 @@ export function deriveFixtureStates(
   const nextNotStarted = [...fixtures]
     .filter((fixture) => fixture.recordStatus !== "settled")
     .sort((a, b) => a.sequence - b.sequence)[0];
+  const nextFixtureIsConfigured = Boolean(
+    nextNotStarted &&
+      !nextNotStarted.homeTeam.placeholder &&
+      !nextNotStarted.awayTeam.placeholder &&
+      nextNotStarted.offers.some((offer) => offer.active),
+  );
   const activeFixtureId =
     nextNotStarted &&
+    nextFixtureIsConfigured &&
     nextNotStarted.recordStatus === "scheduled" &&
     validTime(nextNotStarted.kickoffAt) > nowMs &&
     nowMs < validTime(nextNotStarted.lockAt)

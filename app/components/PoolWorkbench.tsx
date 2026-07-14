@@ -15,6 +15,8 @@ import {
   type ParticipantId,
 } from "@/lib/app-data";
 import { ApiSportsGameWidget } from "./ApiSportsGameWidget";
+import { ParticipantAvatar } from "./ParticipantAvatar";
+import { PoolPodium, type PoolRankingRow } from "./PoolPodium";
 
 type DraftSlots = Partial<Record<ParticipantId, Array<OddsOffer | null>>>;
 type SheetName = "people" | "odds" | "confirm" | "manage" | "rules" | null;
@@ -103,10 +105,28 @@ function responseError(response: Response): Promise<string> {
 function statusLabel(fixture: Fixture, activeFixtureId: string | null): string {
   if (fixture.recordStatus === "settled") return "已结算";
   if (fixture.recordStatus === "review_required") return "待复核";
+  if (fixture.homeTeam.placeholder || fixture.awayTeam.placeholder) return "等待对阵与赔率";
+  if (fixture.offers.length === 0 && fixture.status === "locked") return "等待赔率";
   if (fixture.id === activeFixtureId) return "开放下注";
   if (fixture.status === "in_progress") return "比赛进行中";
   if (fixture.status === "awaiting_result") return "等待赛果";
   return "只读锁定";
+}
+
+function lockedCardCopy(fixture: Fixture): { title: string; body: string } {
+  if (fixture.recordStatus === "settled") {
+    return { title: "本场无人参与", body: "本场没有锁定注单。" };
+  }
+  if (fixture.homeTeam.placeholder || fixture.awayTeam.placeholder) {
+    return {
+      title: "等待对阵与赔率",
+      body: "前两场结束后更新球队；收到赔率图后开放。",
+    };
+  }
+  if (fixture.offers.length === 0) {
+    return { title: "等待赔率", body: "对阵已确认，收到本场赔率图后开放。" };
+  }
+  return { title: "本场暂不可操作", body: "只有顺序中的下一场比赛开放下注。" };
 }
 
 function Flag({ code, label }: { code: string; label: string }) {
@@ -244,18 +264,30 @@ export function PoolWorkbench() {
     return selectedEntries
       .map((entry) => {
         const participant = state.participants.find((person) => person.id === entry.participantId);
-        const payout = state.bets
-          .filter((bet) => bet.fixtureId === selectedFixture.id && bet.participantId === entry.participantId)
-          .reduce((sum, bet) => sum + bet.payoutCents, 0);
+        const participantBets = state.bets.filter(
+          (bet) => bet.fixtureId === selectedFixture.id && bet.participantId === entry.participantId,
+        );
+        const payout = participantBets.reduce((sum, bet) => sum + bet.payoutCents, 0);
+        const wonCount = participantBets.filter((bet) => bet.status === "won").length;
         return {
           id: entry.participantId,
           name: participant?.name ?? entry.participantId,
           invested: entry.stakeCents,
           payout,
           roi: entry.stakeCents > 0 ? ((payout - entry.stakeCents) / entry.stakeCents) * 100 : 0,
-        };
+          hasWin: wonCount > 0,
+          wonCount,
+          displayOrder: participant?.displayOrder ?? 99,
+        } satisfies PoolRankingRow;
       })
-      .sort((a, b) => b.payout - a.payout || a.name.localeCompare(b.name, "zh-CN"));
+      .sort(
+        (a, b) =>
+          Number(b.hasWin) - Number(a.hasWin) ||
+          b.payout - a.payout ||
+          b.roi - a.roi ||
+          b.wonCount - a.wonCount ||
+          a.displayOrder - b.displayOrder,
+      );
   }, [selectedEntries, selectedFixture, state.bets, state.participants]);
 
   const activeDraftPeople = state.participants.filter((person) => (drafts[person.id]?.length ?? 0) > 0);
@@ -521,6 +553,26 @@ export function PoolWorkbench() {
               </div>
             )}
           />
+          <div
+            className="wb-frozen-score"
+            data-frozen={Boolean(result)}
+            aria-label={result ? "已冻结的半场和90分钟结算比分" : "赛后将冻结半场和90分钟结算比分"}
+          >
+            <div className="wb-frozen-score-title">
+              <span>群内结算基准</span>
+              <b>{result ? "已冻结" : "赛后冻结"}</b>
+            </div>
+            <div className="wb-frozen-score-value">
+              <span>半场</span>
+              <strong>{selectedFixture.halfTimeScore ? `${selectedFixture.halfTimeScore.home} : ${selectedFixture.halfTimeScore.away}` : "— : —"}</strong>
+            </div>
+            <span className="wb-frozen-score-arrow" aria-hidden="true">›</span>
+            <div className="wb-frozen-score-value is-regulation">
+              <span>90分钟</span>
+              <strong>{result ? `${result.home} : ${result.away}` : "— : —"}</strong>
+            </div>
+            <small>仅常规时间＋伤停补时<br />不含加时与点球</small>
+          </div>
           <div className="wb-match-stats">
             <div><span>本场总奖池</span><strong>{money(fixturePool)}</strong></div>
             <div><span>参与人数</span><strong>{selectedEntries.length}<small> / 7</small></strong></div>
@@ -537,14 +589,7 @@ export function PoolWorkbench() {
             <div className="wb-ranking-wrap">
               <div className="wb-ranking-title"><strong>本场排行榜</strong><span>剩余 {money(rollover)} 滚入下一场</span></div>
               {leaderboard.length ? (
-                <div className="wb-ranking" role="table" aria-label="本场参与者回报排行榜">
-                  <div className="wb-ranking-row wb-ranking-head" role="row"><span>参与者</span><span>投入</span><span>收获</span><span>净回报率</span></div>
-                  {leaderboard.map((row, index) => (
-                    <div className="wb-ranking-row" role="row" key={row.id}>
-                      <span><i>{index + 1}</i>{row.name}</span><span>{money(row.invested)}</span><strong>{money(row.payout)}</strong><span data-positive={row.roi >= 0}>{row.roi >= 0 ? "+" : ""}{row.roi.toFixed(0)}%</span>
-                    </div>
-                  ))}
-                </div>
+                <PoolPodium rows={leaderboard} />
               ) : <p className="wb-no-ranking">本场无人参与，奖池全额滚存。</p>}
             </div>
           )}
@@ -561,6 +606,7 @@ export function PoolWorkbench() {
               const bets = state.bets.filter((bet) => bet.fixtureId === fixture.id);
               const active = fixture.id === state.activeFixtureId && fixture.isBettingOpen;
               const selected = fixture.id === selectedFixture.id;
+              const emptyCopy = lockedCardCopy(fixture);
               return (
                 <article
                   className={`wb-fixture-card${selected ? " is-selected" : ""}${active ? " is-active" : " is-readonly"}`}
@@ -573,14 +619,38 @@ export function PoolWorkbench() {
                     <span className="wb-card-lock">{active ? `${shanghaiTime(fixture.lockAt)} 锁定` : statusLabel(fixture, state.activeFixtureId)}</span>
                   </header>
                   <div className="wb-card-body">
+                    {(entries.length > 0 || (active && activeDraftPeople.length > 0)) && (
+                      <div className="wb-entry-table-head">
+                        <span>下注人</span><span>项目</span><span>赔率</span>
+                      </div>
+                    )}
                     {entries.map((entry) => {
                       const participant = state.participants.find((person) => person.id === entry.participantId);
                       const entryBets = bets.filter((bet) => bet.participantId === entry.participantId);
                       return (
-                        <details className="wb-locked-entry" key={entry.id}>
-                          <summary><span><i>✓</i><b>{participant?.name ?? entry.participantId}</b></span><span>{entry.betCount}注 · {money(entry.stakeCents)} <em>展开</em></span></summary>
-                          <div>{entryBets.map((bet) => <p key={bet.id}><span>{MARKET_LABEL[offerGroup(bet.marketType)] ?? bet.marketType} · {bet.label}</span><strong>{bet.odds.toFixed(2)}</strong></p>)}</div>
-                        </details>
+                        <div className="wb-locked-entry" key={entry.id}>
+                          <div className="wb-entry-player">
+                            <ParticipantAvatar
+                              participantId={entry.participantId}
+                              className="wb-avatar-card"
+                            />
+                            <span>
+                              <b>{participant?.name ?? entry.participantId}</b>
+                              <small>{entry.betCount}注 · 已锁定</small>
+                            </span>
+                          </div>
+                          <div className="wb-entry-bets">
+                            {entryBets.map((bet) => (
+                              <div className="wb-entry-bet" key={bet.id}>
+                                <span>
+                                  <b>{bet.label}</b>
+                                  <small>{MARKET_LABEL[offerGroup(bet.marketType)] ?? bet.marketType}</small>
+                                </span>
+                                <strong>{bet.odds.toFixed(2)}</strong>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
                       );
                     })}
 
@@ -588,7 +658,13 @@ export function PoolWorkbench() {
                       const slots = drafts[person.id] ?? [];
                       return (
                         <div className="wb-draft" key={person.id}>
-                          <div className="wb-draft-head"><strong>{person.name}<span>未锁定</span></strong><button type="button" onClick={() => setDrafts((current) => ({ ...current, [person.id]: [] }))}>移除</button></div>
+                          <div className="wb-draft-head">
+                            <div>
+                              <ParticipantAvatar participantId={person.id} className="wb-avatar-draft" />
+                              <strong>{person.name}<span>未锁定</span></strong>
+                            </div>
+                            <button type="button" onClick={() => setDrafts((current) => ({ ...current, [person.id]: [] }))}>移除</button>
+                          </div>
                           <div className="wb-draft-slots">
                             {slots.map((offer, slot) => (
                               <button className={offer ? "has-offer" : ""} type="button" key={slot} onClick={() => openOdds(person.id, slot)}>
@@ -610,7 +686,7 @@ export function PoolWorkbench() {
                       </button>
                     )}
                     {!active && entries.length === 0 && (
-                      <div className="wb-card-empty"><span>锁</span><b>{fixture.recordStatus === "settled" ? "本场无人参与" : "本场暂不可操作"}</b><p>只有顺序中的下一场比赛开放下注。</p></div>
+                      <div className="wb-card-empty"><span>锁</span><b>{emptyCopy.title}</b><p>{emptyCopy.body}</p></div>
                     )}
                   </div>
                 </article>
@@ -629,7 +705,13 @@ export function PoolWorkbench() {
               {state.participants.map((person) => {
                 const locked = selectedEntries.some((entry) => entry.participantId === person.id);
                 const drafted = Boolean(drafts[person.id]?.length);
-                return <button type="button" key={person.id} disabled={locked || drafted} onClick={() => addDraftParticipant(person.id)}><span>{person.name.slice(0, 1)}</span><b>{person.name}</b><small>{locked ? "已锁定" : drafted ? "编辑中" : "可加入"}</small></button>;
+                return (
+                  <button type="button" key={person.id} disabled={locked || drafted} onClick={() => addDraftParticipant(person.id)}>
+                    <ParticipantAvatar participantId={person.id} className="wb-avatar-picker" />
+                    <b>{person.name}</b>
+                    <small>{locked ? "已锁定" : drafted ? "编辑中" : "可加入"}</small>
+                  </button>
+                );
               })}
             </div>
           </div>
@@ -668,7 +750,16 @@ export function PoolWorkbench() {
       {sheet === "confirm" && pendingParticipant && (
         <DialogShell title="确认锁定" eyebrow="该操作不可撤回" onClose={() => setSheet(null)}>
           <div className="wb-sheet-body">
-            <div className="wb-confirm-person"><span>{state.participants.find((person) => person.id === pendingParticipant)?.name}</span><strong>{drafts[pendingParticipant]?.length ?? 0}注 · {money((drafts[pendingParticipant]?.length ?? 0) * 1000)}</strong></div>
+            <div className="wb-confirm-person">
+              <span>
+                <ParticipantAvatar
+                  participantId={pendingParticipant}
+                  className="wb-avatar-confirm"
+                />
+                <b>{state.participants.find((person) => person.id === pendingParticipant)?.name}</b>
+              </span>
+              <strong>{drafts[pendingParticipant]?.length ?? 0}注 · {money((drafts[pendingParticipant]?.length ?? 0) * 1000)}</strong>
+            </div>
             <div className="wb-confirm-list">{(drafts[pendingParticipant] ?? []).map((offer, index) => <p key={offer?.id ?? index}><span>{index + 1}. {offer?.label}</span><strong>{offer?.odds.toFixed(2)}</strong></p>)}</div>
             <p className="wb-sheet-note">确认后，此人正式加入本场奖池。每注固定10元，赔率和选择将永久锁定。</p>
           </div>
