@@ -205,3 +205,204 @@ test("admin PIN and per-person edit unlock remain server-authorized", async () =
   );
   assert.doesNotMatch(livePoll, /method:\s*"POST"/);
 });
+
+test("manual result fallback exposes failures before claiming a local settlement", async () => {
+  const [workbench, stateRoute, css] = await Promise.all([
+    readFile(new URL("../app/components/PoolWorkbench.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/state/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.doesNotMatch(workbench, /\bmanualResultHasStarted\b|\bmanualResultIsFinalized\b/);
+  assert.match(
+    workbench,
+    /if \(!managedReviewState\.canSubmit\) \{[\s\S]*?setManualResultError\(managedReviewState\.detail\);[\s\S]*?return;/,
+  );
+  assert.match(workbench, /managedReviewState\.canSubmit \? \(/);
+  assert.match(
+    workbench,
+    /manualResultError && \([\s\S]*?className="wb-sheet-error wb-manual-result-error" role="alert"/,
+    "manual validation and API failures must remain visible inside the score form",
+  );
+  assert.match(workbench, /setManualResultError\(reason instanceof Error \? reason\.message : "赛果保存失败"\)/);
+  assert.match(workbench, /不依赖 API-SPORTS 或 Widget/);
+  assert.match(workbench, /setSelectedFixtureId\(settledFixtureId\)/);
+  assert.match(workbench, /setSheet\(null\);[\s\S]*?赛果已写入本地账本，金额与排行榜已完成结算/);
+  assert.match(css, /\.wb-sheet-error\s*\{/);
+
+  assert.match(
+    stateRoute,
+    /if \(input\.source === "manual"\) \{[\s\S]*?badRequest\([\s\S]*?半全场玩法/,
+  );
+  assert.match(stateRoute, /isGradeableOddsSelection\(offer\.marketType, offer\.selectionCode\)/);
+});
+
+test("manual knockout entry opens at T+3 and derives the winner from dynamic score fields", async () => {
+  const [workbench, stateRoute, appData] = await Promise.all([
+    readFile(new URL("../app/components/PoolWorkbench.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/state/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/app-data.ts", import.meta.url), "utf8"),
+  ]);
+
+  const editorStart = workbench.indexOf("<h3>人工复核比分</h3>");
+  const editorEnd = workbench.indexOf("</section>", editorStart);
+  const editor = workbench.slice(editorStart, editorEnd);
+  assert.ok(editorStart >= 0 && editorEnd > editorStart, "manual editor should remain visible");
+
+  assert.match(workbench, /isManualReviewOpen\(/);
+  for (const field of [
+    "afterExtraHome",
+    "afterExtraAway",
+    "penaltyHome",
+    "penaltyAway",
+  ]) {
+    assert.match(editor, new RegExp(`value=\\{${field}\\}`), `${field} must be rendered`);
+  }
+  assert.match(
+    editor,
+    /\{regulationIsDraw && \([\s\S]{0,900}?value=\{afterExtraHome\}/,
+    "extra-time fields should appear only after a 90-minute draw",
+  );
+  assert.match(
+    editor,
+    /\{regulationIsDraw && afterExtraIsDraw && \([\s\S]{0,900}?value=\{penaltyHome\}/,
+    "shoot-out fields should appear only after an extra-time draw",
+  );
+  assert.doesNotMatch(editor, /<select\b/, "the advancing side must not be selected manually");
+  assert.doesNotMatch(workbench, /\bmanualWinnerSide\b/);
+
+  const saveStart = workbench.indexOf("async function saveManualResult()");
+  const saveEnd = workbench.indexOf("async function setSelectedEntryUnlocked", saveStart);
+  const saveManualResult = workbench.slice(saveStart, saveEnd);
+  assert.ok(saveStart >= 0 && saveEnd > saveStart);
+  for (const payloadField of [
+    "afterExtraTimeHome",
+    "afterExtraTimeAway",
+    "penaltyShootoutHome",
+    "penaltyShootoutAway",
+  ]) {
+    assert.match(saveManualResult, new RegExp(`\\b${payloadField}\\b`));
+  }
+  assert.doesNotMatch(saveManualResult, /\bwinnerSide\s*:/);
+
+  const requestStart = appData.indexOf("export interface ManualResultRequest");
+  const requestEnd = appData.indexOf("export type StateMutationRequest", requestStart);
+  const requestContract = appData.slice(requestStart, requestEnd);
+  assert.ok(requestStart >= 0 && requestEnd > requestStart);
+  assert.match(requestContract, /afterExtraTimeHome\?: number/);
+  assert.match(requestContract, /penaltyShootoutHome\?: number/);
+  assert.doesNotMatch(requestContract, /winnerSide/);
+
+  const manualRouteStart = stateRoute.indexOf("async function manualResult(");
+  const manualRouteEnd = stateRoute.indexOf("export async function GET", manualRouteStart);
+  const manualRoute = stateRoute.slice(manualRouteStart, manualRouteEnd);
+  assert.ok(manualRouteStart >= 0 && manualRouteEnd > manualRouteStart);
+  assert.match(manualRoute, /isManualReviewOpen\(/);
+  assert.match(manualRoute, /knockoutResultValidationError\(/);
+  assert.match(manualRoute, /winnerSideFromKnockoutScores\(/);
+  assert.doesNotMatch(manualRoute, /payload\.winnerSide/);
+});
+
+test("local result cards show extra time and bracketed shoot-out scores", async () => {
+  const workbench = await readFile(
+    new URL("../app/components/PoolWorkbench.tsx", import.meta.url),
+    "utf8",
+  );
+  const localCardStart = workbench.indexOf("function LocalMatchCard(");
+  const localCardEnd = workbench.indexOf("function DialogShell(", localCardStart);
+  const localCard = workbench.slice(localCardStart, localCardEnd);
+
+  assert.ok(localCardStart >= 0 && localCardEnd > localCardStart);
+  assert.match(localCard, /fixture\.afterExtraTimeScore/);
+  assert.match(localCard, /fixture\.penaltyShootoutScore/);
+  assert.match(localCard, /加时/);
+  assert.match(
+    localCard,
+    /const decidingScore\s*=\s*penalties\s*\?\?\s*afterExtraTime/,
+    "shoot-out score should take precedence over the extra-time score",
+  );
+  assert.match(
+    localCard,
+    /<small>（\{decidingScore\.home\}\s*:\s*\{decidingScore\.away\}）<\/small>/,
+    "the deciding score should be visually subordinate in parentheses",
+  );
+});
+
+test("backend settlement grades money only from half-time and 90-minute scores", async () => {
+  const stateRoute = await readFile(
+    new URL("../app/api/state/route.ts", import.meta.url),
+    "utf8",
+  );
+  const settleStart = stateRoute.indexOf("async function settleFixture(");
+  const settleEnd = stateRoute.indexOf("async function manualResult(", settleStart);
+  const settleFixture = stateRoute.slice(settleStart, settleEnd);
+  assert.ok(settleStart >= 0 && settleEnd > settleStart);
+
+  const gradingStart = settleFixture.indexOf("const score =");
+  const gradingEnd = settleFixture.indexOf("const unsupported", gradingStart);
+  const grading = settleFixture.slice(gradingStart, gradingEnd);
+  assert.ok(gradingStart >= 0 && gradingEnd > gradingStart);
+  assert.match(
+    grading,
+    /const score\s*=\s*\{\s*home:\s*input\.regularHome,\s*away:\s*input\.regularAway\s*\}/,
+  );
+  assert.match(
+    grading,
+    /gradeSelection\(bet\.marketType, bet\.selectionCode, score, halfTimeScore\)/,
+  );
+  assert.doesNotMatch(grading, /input\.(?:afterExtraTimeScore|penaltyShootoutScore)/);
+  assert.match(settleFixture, /afterExtraTimeScore:\s*input\.afterExtraTimeScore/);
+  assert.match(settleFixture, /penaltyShootoutScore:\s*input\.penaltyShootoutScore/);
+});
+
+test("result sync retries invalid responses and cools down before due-fixture discovery", async () => {
+  const syncRoute = await readFile(
+    new URL("../app/api/results/sync/route.ts", import.meta.url),
+    "utf8",
+  );
+
+  const retrySetStart = syncRoute.indexOf("const RETRYABLE_PROVIDER_STATUSES");
+  const retrySetEnd = syncRoute.indexOf("]);", retrySetStart);
+  const retrySet = syncRoute.slice(retrySetStart, retrySetEnd);
+  assert.ok(retrySetStart >= 0 && retrySetEnd > retrySetStart);
+  assert.match(retrySet, /"INVALID_RESPONSE"/);
+
+  const providerStart = syncRoute.indexOf("class ApiFootballProvider");
+  const providerEnd = syncRoute.indexOf("async function ensureSeedData", providerStart);
+  const provider = syncRoute.slice(providerStart, providerEnd);
+  assert.match(
+    provider,
+    /error instanceof ApiFootballRequestError[\s\S]*?providerStatus:\s*error\.code[\s\S]*?outcome:\s*"waiting"/,
+    "malformed upstream responses must remain retryable instead of forcing review",
+  );
+
+  const dueLoopStart = syncRoute.indexOf("for (const fixture of dueFixtures)");
+  const providerFetch = syncRoute.indexOf(
+    "const providerResult = await provider.getMatch(providerMatchId)",
+    dueLoopStart,
+  );
+  const duePreparation = syncRoute.slice(dueLoopStart, providerFetch);
+  assert.ok(dueLoopStart >= 0 && providerFetch > dueLoopStart);
+
+  const cooldownGuard = duePreparation.indexOf("isInAutoRetryCooldown");
+  const providerIdRead = duePreparation.indexOf("let providerMatchId");
+  const providerDiscovery = duePreparation.indexOf("discoverProviderMatchId(fixture)");
+  assert.ok(cooldownGuard >= 0, "due fixtures should consult the retry cooldown");
+  assert.ok(
+    cooldownGuard < providerIdRead && providerIdRead < providerDiscovery,
+    "cooldown must short-circuit before reading or discovering a provider match ID",
+  );
+  assert.match(
+    duePreparation.slice(cooldownGuard, providerIdRead),
+    /outcome:\s*"cooldown"[\s\S]*?continue;/,
+  );
+
+  const retryableDiscovery = duePreparation.indexOf(
+    "RETRYABLE_PROVIDER_STATUSES.has(discovery.providerStatus)",
+  );
+  const permanentReview = duePreparation.indexOf("markReviewRequired(");
+  assert.ok(
+    retryableDiscovery >= 0 && permanentReview > retryableDiscovery,
+    "retryable discovery statuses must take the waiting path before permanent review",
+  );
+});

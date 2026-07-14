@@ -12,6 +12,8 @@ import {
 } from "react";
 import {
   createSeedState,
+  isManualReviewOpen,
+  manualReviewOpensAt,
   type AppState,
   type Bet,
   type Fixture,
@@ -143,6 +145,19 @@ function responseError(response: Response): Promise<string> {
     .catch(() => `请求失败（${response.status}）`);
 }
 
+function hasCompleteKnockoutOutcome(fixture: Fixture): boolean {
+  const regulation = fixture.regularTimeScore;
+  if (fixture.recordStatus !== "settled" || !fixture.winnerSide || !regulation) return false;
+  if (regulation.home !== regulation.away) return true;
+
+  const afterExtraTime = fixture.afterExtraTimeScore;
+  if (!afterExtraTime) return false;
+  if (afterExtraTime.home !== afterExtraTime.away) return true;
+
+  const penalties = fixture.penaltyShootoutScore;
+  return Boolean(penalties && penalties.home !== penalties.away);
+}
+
 type FixturePresentationMode =
   | "next"
   | "upcoming-confirmed"
@@ -212,6 +227,73 @@ function lockedCardCopy(
   return { title: "本场已经锁定", body: "下注历史保持可见，当前不能再修改。" };
 }
 
+type AdminReviewState = {
+  kind: "settled" | "matchup-pending" | "too-early" | "prior-pending" | "reviewable";
+  label: string;
+  detail: string;
+  canSubmit: boolean;
+};
+
+function adminReviewState(
+  fixture: Fixture,
+  fixtures: Fixture[],
+  nowMs: number,
+): AdminReviewState {
+  if (hasCompleteKnockoutOutcome(fixture)) {
+    return {
+      kind: "settled",
+      label: "已结算",
+      detail: "本地赛果、金额和晋级方均已锁定。",
+      canSubmit: false,
+    };
+  }
+  if (fixture.homeTeam.placeholder || fixture.awayTeam.placeholder) {
+    return {
+      kind: "matchup-pending",
+      label: "对阵待定",
+      detail: "等待前场赛果写入双方球队后再复核。",
+      canSubmit: false,
+    };
+  }
+
+  const opensAt = manualReviewOpensAt(fixture.kickoffAt);
+  if (!isManualReviewOpen(fixture.kickoffAt, nowMs)) {
+    const opensAtLabel = Number.isFinite(opensAt)
+      ? shanghaiDateTime(new Date(opensAt).toISOString())
+      : "比赛时间确认后";
+    return {
+      kind: "too-early",
+      label: "未到时间",
+      detail: `${opensAtLabel}（开赛 T+3h）后可人工复核。`,
+      canSubmit: false,
+    };
+  }
+
+  const blockingPrior = fixtures.find(
+    (candidate) =>
+      candidate.sequence < fixture.sequence &&
+      !hasCompleteKnockoutOutcome(candidate),
+  );
+  if (blockingPrior) {
+    return {
+      kind: "prior-pending",
+      label: `等待 ${blockingPrior.matchCode}`,
+      detail: `请先完成 ${blockingPrior.matchCode} 的结算和晋级方，避免滚存奖池顺序错误。`,
+      canSubmit: false,
+    };
+  }
+
+  return {
+    kind: "reviewable",
+    label: fixture.recordStatus === "settled" ? "可补完整赛果" : "可复核",
+    detail:
+      fixture.recordStatus === "settled"
+        ? "90分钟奖池已结算，请补齐加时或点球比分以确定晋级方。"
+        : "不依赖 API-SPORTS 或 Widget；保存后直接写入本地账本。",
+    canSubmit: true,
+  };
+}
+
 function Flag({ code, label }: { code: string; label: string }) {
   const supported = ["FRA", "ESP", "ENG", "ARG"].includes(code);
   return (
@@ -232,14 +314,21 @@ function LocalMatchCard({
   mode: FixturePresentationMode;
 }) {
   const result = fixture.regularTimeScore;
+  const afterExtraTime = fixture.afterExtraTimeScore;
+  const penalties = fixture.penaltyShootoutScore;
+  const decidingScore = penalties ?? afterExtraTime;
   const winner = fixture.winnerSide
     ? fixture.winnerSide === "home"
       ? fixture.homeTeam
       : fixture.awayTeam
     : null;
   const scoreNote = result
-    ? result.home === result.away && winner
-      ? `90分钟平局 · ${winner.name}晋级`
+    ? penalties
+      ? `${afterExtraTime ? `加时后 ${afterExtraTime.home}:${afterExtraTime.away} · ` : ""}点球 ${penalties.home}:${penalties.away}${winner ? ` · ${winner.name}晋级` : ""}`
+      : afterExtraTime
+        ? `加时后 ${afterExtraTime.home}:${afterExtraTime.away}${winner ? ` · ${winner.name}晋级` : ""}`
+        : result.home === result.away && winner
+          ? `90分钟平局 · ${winner.name}晋级`
       : result.home === result.away
         ? "90分钟已结算 · 等待最终胜者"
         : "90分钟比分 · 本地记录"
@@ -258,7 +347,16 @@ function LocalMatchCard({
         <b>{fixture.homeTeam.name}</b>
       </div>
       <div className="wb-score">
-        <strong>{result ? `${result.home} : ${result.away}` : "— : —"}</strong>
+        <strong
+          aria-label={result
+            ? `90分钟${result.home}比${result.away}${penalties ? `，点球大战${penalties.home}比${penalties.away}` : afterExtraTime ? `，加时后${afterExtraTime.home}比${afterExtraTime.away}` : ""}`
+            : "比分待定"}
+        >
+          {result ? `${result.home} : ${result.away}` : "— : —"}
+          {result && decidingScore && (
+            <small>（{decidingScore.home}:{decidingScore.away}）</small>
+          )}
+        </strong>
         <span>{scoreNote}</span>
       </div>
       <div className="wb-team wb-team-away">
@@ -427,6 +525,7 @@ function groupedOffers(offers: OddsOffer[]): Array<{ key: string; label: string;
 export function PoolWorkbench() {
   const [state, setState] = useState<AppState>(() => createSeedState());
   const [selectedFixtureId, setSelectedFixtureId] = useState<string | null>(null);
+  const [managedFixtureId, setManagedFixtureId] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<DraftSlots>({});
   const [sheet, setSheet] = useState<SheetName>(null);
   const [picker, setPicker] = useState<{ participantId: ParticipantId; slot: number } | null>(null);
@@ -440,6 +539,7 @@ export function PoolWorkbench() {
   const [adminPinError, setAdminPinError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [manualResultError, setManualResultError] = useState<string | null>(null);
   const [ledgerReady, setLedgerReady] = useState(false);
   const [lockClock, setLockClock] = useState(() => Date.now());
   const [stateReceivedAt, setStateReceivedAt] = useState(() => Date.now());
@@ -448,7 +548,10 @@ export function PoolWorkbench() {
   const [halfAway, setHalfAway] = useState("");
   const [fullHome, setFullHome] = useState("");
   const [fullAway, setFullAway] = useState("");
-  const [manualWinnerSide, setManualWinnerSide] = useState<"" | "home" | "away">("");
+  const [afterExtraHome, setAfterExtraHome] = useState("");
+  const [afterExtraAway, setAfterExtraAway] = useState("");
+  const [penaltyHome, setPenaltyHome] = useState("");
+  const [penaltyAway, setPenaltyAway] = useState("");
   const trackRef = useRef<HTMLDivElement | null>(null);
   const didInitialScroll = useRef(false);
   const scrollFrame = useRef<number | null>(null);
@@ -464,6 +567,7 @@ export function PoolWorkbench() {
   const fixtures = useMemo(() => [...state.fixtures].sort((a, b) => a.sequence - b.sequence), [state.fixtures]);
   const nextFixture = fixtures.find((fixture) => fixture.id === state.nextFixtureId) ?? null;
   const selectedFixture = fixtures.find((fixture) => fixture.id === selectedFixtureId) ?? nextFixture ?? fixtures[0] ?? null;
+  const managedFixture = fixtures.find((fixture) => fixture.id === managedFixtureId) ?? selectedFixture;
   const estimatedServerNowMs = Date.parse(state.serverTime) + Math.max(
     0,
     lockClock - stateReceivedAt,
@@ -479,6 +583,37 @@ export function PoolWorkbench() {
   const isActive = Boolean(
     selectedFixture &&
     selectedFixture.id === locallyActiveFixtureId,
+  );
+  const managedIsActive = Boolean(
+    managedFixture &&
+    managedFixture.id === locallyActiveFixtureId,
+  );
+  const managedReviewState = managedFixture
+    ? adminReviewState(managedFixture, fixtures, estimatedServerNowMs)
+    : null;
+  const managedWinnerTeam = managedFixture?.winnerSide
+    ? managedFixture.winnerSide === "home"
+      ? managedFixture.homeTeam
+      : managedFixture.awayTeam
+    : null;
+  const managedOddsLocked = Boolean(
+    managedFixture && estimatedServerNowMs >= Date.parse(managedFixture.lockAt),
+  );
+  const fullScoreIsComplete =
+    fullHome.trim() !== "" &&
+    fullAway.trim() !== "" &&
+    Number.isInteger(Number(fullHome)) &&
+    Number.isInteger(Number(fullAway));
+  const regulationIsDraw = Boolean(
+    fullScoreIsComplete && Number(fullHome) === Number(fullAway),
+  );
+  const afterExtraScoreIsComplete =
+    afterExtraHome.trim() !== "" &&
+    afterExtraAway.trim() !== "" &&
+    Number.isInteger(Number(afterExtraHome)) &&
+    Number.isInteger(Number(afterExtraAway));
+  const afterExtraIsDraw = Boolean(
+    afterExtraScoreIsComplete && Number(afterExtraHome) === Number(afterExtraAway),
   );
   const selectedEntries = useMemo(
     () => selectedFixture ? state.entries.filter((entry) => entry.fixtureId === selectedFixture.id) : [],
@@ -498,6 +633,25 @@ export function PoolWorkbench() {
       })
       .sort((a, b) => a.displayOrder - b.displayOrder),
     [selectedEntries, state.participants],
+  );
+  const managedEntries = useMemo(
+    () => managedFixture
+      ? state.entries.filter((entry) => entry.fixtureId === managedFixture.id)
+      : [],
+    [managedFixture, state.entries],
+  );
+  const managedParticipantBreakdown = useMemo(
+    () => managedEntries
+      .map((entry) => {
+        const participant = state.participants.find((person) => person.id === entry.participantId);
+        return {
+          ...entry,
+          name: participant?.name ?? entry.participantId,
+          displayOrder: participant?.displayOrder ?? 99,
+        };
+      })
+      .sort((a, b) => a.displayOrder - b.displayOrder),
+    [managedEntries, state.participants],
   );
 
   const carryBefore = useMemo(() => {
@@ -552,7 +706,7 @@ export function PoolWorkbench() {
     ? selectedEntries.find((entry) => entry.participantId === pendingParticipant) ?? null
     : null;
   const unlockTargetEntry = unlockTarget
-    ? selectedEntries.find((entry) => entry.participantId === unlockTarget) ?? null
+    ? managedEntries.find((entry) => entry.participantId === unlockTarget) ?? null
     : null;
   const pickerFixture = selectedFixture;
   const pickerGroups = useMemo(() => groupedOffers(pickerFixture?.offers ?? []), [pickerFixture]);
@@ -758,6 +912,12 @@ export function PoolWorkbench() {
   }, [sheet]);
 
   useEffect(() => {
+    if (sheet !== "manage") return;
+    const timer = window.setInterval(() => setLockClock(Date.now()), 15_000);
+    return () => window.clearInterval(timer);
+  }, [sheet]);
+
+  useEffect(() => {
     if (!selectedFixtureId) return;
     if (
       didInitialScroll.current &&
@@ -858,10 +1018,38 @@ export function PoolWorkbench() {
     throw new Error(message);
   }
 
+  function prepareManualResultFields(fixture: Fixture | null) {
+    setHalfHome(fixture?.halfTimeScore?.home.toString() ?? "");
+    setHalfAway(fixture?.halfTimeScore?.away.toString() ?? "");
+    setFullHome(fixture?.regularTimeScore?.home.toString() ?? "");
+    setFullAway(fixture?.regularTimeScore?.away.toString() ?? "");
+    setAfterExtraHome(fixture?.afterExtraTimeScore?.home.toString() ?? "");
+    setAfterExtraAway(fixture?.afterExtraTimeScore?.away.toString() ?? "");
+    setPenaltyHome(fixture?.penaltyShootoutScore?.home.toString() ?? "");
+    setPenaltyAway(fixture?.penaltyShootoutScore?.away.toString() ?? "");
+    setManualResultError(null);
+  }
+
+  function selectManagedFixture(fixture: Fixture) {
+    setManagedFixtureId(fixture.id);
+    setUnlockTarget(null);
+    setError(null);
+    prepareManualResultFields(fixture);
+  }
+
+  function showManageSheet() {
+    const target = selectedFixture ?? nextFixture ?? fixtures[0] ?? null;
+    setError(null);
+    setManagedFixtureId(target?.id ?? null);
+    prepareManualResultFields(target);
+    setLockClock(Date.now());
+    setSheet("manage");
+  }
+
   async function openManage() {
     setAdminPinError(null);
     if (adminAuthenticated) {
-      setSheet("manage");
+      showManageSheet();
       return;
     }
     setAdminBusy(true);
@@ -870,7 +1058,7 @@ export function PoolWorkbench() {
       const body = (await response.json()) as { authenticated?: boolean };
       if (response.ok && body.authenticated) {
         setAdminAuthenticated(true);
-        setSheet("manage");
+        showManageSheet();
       } else {
         setSheet("admin-login");
       }
@@ -899,7 +1087,7 @@ export function PoolWorkbench() {
       if (!response.ok) throw new Error(await responseError(response));
       setAdminAuthenticated(true);
       setAdminPin("");
-      setSheet("manage");
+      showManageSheet();
     } catch (reason) {
       setAdminPinError(reason instanceof Error ? reason.message : "管理密码验证失败。");
       window.requestAnimationFrame(() => adminPinInputRef.current?.focus());
@@ -981,7 +1169,8 @@ export function PoolWorkbench() {
   }
 
   async function importOdds() {
-    if (!selectedFixture) return;
+    if (!managedFixture) return;
+    const fixture = managedFixture;
     setBusy(true);
     setError(null);
     try {
@@ -993,7 +1182,7 @@ export function PoolWorkbench() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           action: "upload-odds",
-          fixtureId: selectedFixture.id,
+          fixtureId: fixture.id,
           source: Array.isArray(parsed) ? "手动导入" : parsed.source,
           providerMatchId: Array.isArray(parsed) ? null : parsed.providerMatchId,
           offers,
@@ -1001,7 +1190,7 @@ export function PoolWorkbench() {
       });
       await assertAdminResponse(response);
       applyState(unwrapState(await response.json()));
-      setToast(`已导入${offers.length}个赔率选项`);
+      setToast(`${fixture.matchCode} 已导入${offers.length}个赔率选项`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "赔率导入失败");
     } finally {
@@ -1009,58 +1198,175 @@ export function PoolWorkbench() {
     }
   }
 
+  function normalizeScoreInput(value: string): string {
+    return value.replace(/\D/g, "").slice(0, 2);
+  }
+
+  function updateRegulationScore(side: "home" | "away", rawValue: string) {
+    const value = normalizeScoreInput(rawValue);
+    const nextHome = side === "home" ? value : fullHome;
+    const nextAway = side === "away" ? value : fullAway;
+    if (side === "home") setFullHome(value);
+    else setFullAway(value);
+    setManualResultError(null);
+
+    const remainsDraw =
+      nextHome !== "" &&
+      nextAway !== "" &&
+      Number(nextHome) === Number(nextAway);
+    if (!remainsDraw) {
+      setAfterExtraHome("");
+      setAfterExtraAway("");
+      setPenaltyHome("");
+      setPenaltyAway("");
+    }
+  }
+
+  function updateAfterExtraScore(side: "home" | "away", rawValue: string) {
+    const value = normalizeScoreInput(rawValue);
+    const nextHome = side === "home" ? value : afterExtraHome;
+    const nextAway = side === "away" ? value : afterExtraAway;
+    if (side === "home") setAfterExtraHome(value);
+    else setAfterExtraAway(value);
+    setManualResultError(null);
+
+    const remainsDraw =
+      nextHome !== "" &&
+      nextAway !== "" &&
+      Number(nextHome) === Number(nextAway);
+    if (!remainsDraw) {
+      setPenaltyHome("");
+      setPenaltyAway("");
+    }
+  }
+
   async function saveManualResult() {
-    if (!selectedFixture) return;
-    const regulationHome = Number(fullHome);
-    const regulationAway = Number(fullAway);
-    const hasHalf = halfHome !== "" || halfAway !== "";
-    if (!Number.isInteger(regulationHome) || !Number.isInteger(regulationAway) || regulationHome < 0 || regulationAway < 0) {
-      setError("请输入有效的90分钟非负整数比分。");
+    if (!managedFixture || !managedReviewState) return;
+    const fixture = managedFixture;
+    if (!managedReviewState.canSubmit) {
+      setManualResultError(managedReviewState.detail);
       return;
     }
-    if (hasHalf && (!Number.isInteger(Number(halfHome)) || !Number.isInteger(Number(halfAway)))) {
-      setError("半场比分需要同时填写两个整数。");
+
+    const normalizedHalfHome = halfHome.trim();
+    const normalizedHalfAway = halfAway.trim();
+    const normalizedFullHome = fullHome.trim();
+    const normalizedFullAway = fullAway.trim();
+    const hasHalfHome = normalizedHalfHome !== "";
+    const hasHalfAway = normalizedHalfAway !== "";
+    if (hasHalfHome !== hasHalfAway) {
+      setManualResultError("半场比分需要同时填写两个整数，或两项都留空。");
       return;
     }
-    if (regulationHome === regulationAway && !manualWinnerSide) {
-      setError("90分钟战平时，请选择加时或点球后的实际晋级方。");
+    if (normalizedFullHome === "" || normalizedFullAway === "") {
+      setManualResultError("90分钟比分需要同时填写主队和客队。");
       return;
     }
+    const regulationHome = Number(normalizedFullHome);
+    const regulationAway = Number(normalizedFullAway);
+    const hasHalf = hasHalfHome && hasHalfAway;
+    const validScore = (value: number) => Number.isInteger(value) && value >= 0 && value <= 99;
+    if (!validScore(regulationHome) || !validScore(regulationAway)) {
+      setManualResultError("请输入0到99之间的90分钟整数比分。");
+      return;
+    }
+    const halfTimeHome = hasHalf ? Number(normalizedHalfHome) : undefined;
+    const halfTimeAway = hasHalf ? Number(normalizedHalfAway) : undefined;
+    if (hasHalf && (!validScore(halfTimeHome!) || !validScore(halfTimeAway!))) {
+      setManualResultError("半场比分需要同时填写0到99之间的整数。");
+      return;
+    }
+    if (
+      hasHalf &&
+      (halfTimeHome! > regulationHome || halfTimeAway! > regulationAway)
+    ) {
+      setManualResultError("半场比分不能大于90分钟比分。");
+      return;
+    }
+
+    const needsExtraTime = regulationHome === regulationAway;
+    let extraTimeHome: number | undefined;
+    let extraTimeAway: number | undefined;
+    let shootoutHome: number | undefined;
+    let shootoutAway: number | undefined;
+    if (needsExtraTime) {
+      if (afterExtraHome.trim() === "" || afterExtraAway.trim() === "") {
+        setManualResultError("90分钟战平时，请填写加时赛结束后的累计比分。");
+        return;
+      }
+      extraTimeHome = Number(afterExtraHome);
+      extraTimeAway = Number(afterExtraAway);
+      if (!validScore(extraTimeHome) || !validScore(extraTimeAway)) {
+        setManualResultError("加时赛累计比分需要同时填写0到99之间的整数。");
+        return;
+      }
+      if (extraTimeHome < regulationHome || extraTimeAway < regulationAway) {
+        setManualResultError("加时赛累计比分不能低于90分钟比分。");
+        return;
+      }
+      if (extraTimeHome === extraTimeAway) {
+        if (penaltyHome.trim() === "" || penaltyAway.trim() === "") {
+          setManualResultError("加时后仍然战平，请填写点球大战比分。");
+          return;
+        }
+        shootoutHome = Number(penaltyHome);
+        shootoutAway = Number(penaltyAway);
+        if (!validScore(shootoutHome) || !validScore(shootoutAway)) {
+          setManualResultError("点球大战比分需要同时填写0到99之间的整数。");
+          return;
+        }
+        if (shootoutHome === shootoutAway) {
+          setManualResultError("点球大战必须决出胜负，比分不能相同。");
+          return;
+        }
+      }
+    }
+
     setBusy(true);
-    setError(null);
+    setManualResultError(null);
     try {
       const response = await fetch("/api/state", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           action: "manual-result",
-          fixtureId: selectedFixture.id,
-          halfHome: hasHalf ? Number(halfHome) : undefined,
-          halfAway: hasHalf ? Number(halfAway) : undefined,
+          fixtureId: fixture.id,
+          halfHome: halfTimeHome,
+          halfAway: halfTimeAway,
           regulationHome,
           regulationAway,
-          winnerSide:
-            regulationHome === regulationAway
-              ? manualWinnerSide || undefined
-              : regulationHome > regulationAway
-                ? "home"
-                : "away",
+          afterExtraTimeHome: extraTimeHome,
+          afterExtraTimeAway: extraTimeAway,
+          penaltyShootoutHome: shootoutHome,
+          penaltyShootoutAway: shootoutAway,
           reason: "管理员核对数据源后录入",
         }),
       });
       await assertAdminResponse(response);
+      const settledFixtureId = fixture.id;
       applyState(unwrapState(await response.json()));
-      setManualWinnerSide("");
-      setToast("90分钟赛果已锁定并完成结算");
+      requestedScrollFixtureId.current = settledFixtureId;
+      setSelectedFixtureId(settledFixtureId);
+      setHalfHome("");
+      setHalfAway("");
+      setFullHome("");
+      setFullAway("");
+      setAfterExtraHome("");
+      setAfterExtraAway("");
+      setPenaltyHome("");
+      setPenaltyAway("");
+      setSheet(null);
+      setToast(`${fixture.matchCode} 赛果已写入本地账本，金额与排行榜已完成结算`);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "赛果保存失败");
+      setManualResultError(reason instanceof Error ? reason.message : "赛果保存失败");
     } finally {
       setBusy(false);
     }
   }
 
   async function setSelectedEntryUnlocked(entry: FixtureEntry, unlocked: boolean) {
-    if (!selectedFixture || !isActive) return;
+    if (!managedFixture || !managedIsActive) return;
+    const fixture = managedFixture;
     setBusy(true);
     setError(null);
     try {
@@ -1069,7 +1375,7 @@ export function PoolWorkbench() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           action: "set-entry-edit-unlocked",
-          fixtureId: selectedFixture.id,
+          fixtureId: fixture.id,
           participantId: entry.participantId,
           unlocked,
         }),
@@ -1077,6 +1383,8 @@ export function PoolWorkbench() {
       await assertAdminResponse(response);
       const next = unwrapState(await response.json());
       applyState(next);
+      requestedScrollFixtureId.current = fixture.id;
+      setSelectedFixtureId(fixture.id);
       const name = state.participants.find((person) => person.id === entry.participantId)?.name;
       setToast(
         unlocked
@@ -1136,8 +1444,13 @@ export function PoolWorkbench() {
       : selectedFixture.awayTeam
     : null;
   const resultOutcome = result ? (result.home > result.away ? `${selectedFixture.homeTeam.name}胜` : result.home < result.away ? `${selectedFixture.awayTeam.name}胜` : "平局") : "";
+  const knockoutResolution = selectedFixture.penaltyShootoutScore
+    ? ` · 加时后 ${selectedFixture.afterExtraTimeScore?.home ?? result?.home}:${selectedFixture.afterExtraTimeScore?.away ?? result?.away} · 点球 ${selectedFixture.penaltyShootoutScore.home}:${selectedFixture.penaltyShootoutScore.away}`
+    : selectedFixture.afterExtraTimeScore
+      ? ` · 加时后 ${selectedFixture.afterExtraTimeScore.home}:${selectedFixture.afterExtraTimeScore.away}`
+      : "";
   const tickerText = result
-    ? `90分钟赛果 · ${result.home}:${result.away} · ${resultOutcome}${result.home === result.away && advancingTeam ? ` · ${advancingTeam.name}晋级` : ""} · 总进球 ${result.home + result.away} · 不含加时与点球`
+    ? `90分钟赛果 · ${result.home}:${result.away} · ${resultOutcome}${knockoutResolution}${result.home === result.away && advancingTeam ? ` · ${advancingTeam.name}晋级` : ""} · 奖池总进球 ${result.home + result.away} · 结算不含加时与点球`
     : "";
 
   return (
@@ -1539,18 +1852,55 @@ export function PoolWorkbench() {
         </DialogShell>
       )}
 
-      {sheet === "manage" && (
-        <DialogShell title="本场管理" eyebrow={`${selectedFixture.matchCode} · ${selectedFixture.homeTeam.name} vs ${selectedFixture.awayTeam.name}`} onClose={() => setSheet(null)}>
+      {sheet === "manage" && managedFixture && managedReviewState && (
+        <DialogShell
+          title="比赛管理"
+          eyebrow={`${managedFixture.matchCode} · ${managedFixture.homeTeam.name} vs ${managedFixture.awayTeam.name}`}
+          onClose={() => setSheet(null)}
+        >
           <div className="wb-sheet-body wb-manage-body">
+            <nav className="wb-admin-fixture-picker" aria-label="选择要管理的比赛">
+              {fixtures.map((fixture) => {
+                const reviewState = adminReviewState(fixture, fixtures, estimatedServerNowMs);
+                const selected = fixture.id === managedFixture.id;
+                return (
+                  <button
+                    type="button"
+                    key={fixture.id}
+                    data-state={reviewState.kind}
+                    aria-pressed={selected}
+                    disabled={busy}
+                    onClick={() => selectManagedFixture(fixture)}
+                  >
+                    <span><b>{fixture.matchCode}</b><small>{STAGE_LABEL[fixture.stage]}</small></span>
+                    <strong>{reviewState.label}</strong>
+                  </button>
+                );
+              })}
+            </nav>
+
+            <div className="wb-admin-fixture-summary">
+              <span><b>{managedFixture.homeTeam.name}</b><i>vs</i><b>{managedFixture.awayTeam.name}</b></span>
+              <small>{shanghaiDateTime(managedFixture.kickoffAt)} 北京时间</small>
+              <em data-state={managedReviewState.kind}>{managedReviewState.label}</em>
+            </div>
+
+            {error && (
+              <div className="wb-sheet-error" role="alert">
+                <span>{error}</span>
+                <button type="button" onClick={() => setError(null)} aria-label="关闭错误提示">×</button>
+              </div>
+            )}
+
             <section className="wb-admin-unlock">
               <header>
-                <div><h3>下注解锁</h3><p>只影响所选参与人，其他人的下注不变。</p></div>
-                <span>{isActive ? `可调整至 ${shanghaiTime(selectedFixture.lockAt)}` : "当前不可调整"}</span>
+                <div><h3>下注解锁</h3><p>只影响 {managedFixture.matchCode} 的所选参与人，其他人的下注不变。</p></div>
+                <span>{managedIsActive ? `可调整至 ${shanghaiTime(managedFixture.lockAt)}` : "当前不可调整"}</span>
               </header>
-              {isActive ? (
-                participantBreakdown.length ? (
+              {managedIsActive ? (
+                managedParticipantBreakdown.length ? (
                   <ul>
-                    {participantBreakdown.map((entry) => (
+                    {managedParticipantBreakdown.map((entry) => (
                       <li key={entry.id}>
                         <span>
                           <ParticipantAvatar participantId={entry.participantId} className="wb-avatar-admin" />
@@ -1561,6 +1911,7 @@ export function PoolWorkbench() {
                           className={entry.canEdit ? "is-unlocked" : ""}
                           disabled={busy}
                           onClick={() => {
+                            setError(null);
                             setUnlockTarget(entry.participantId);
                             setSheet("unlock-confirm");
                           }}
@@ -1571,53 +1922,129 @@ export function PoolWorkbench() {
                     ))}
                   </ul>
                 ) : (
-                  <p className="wb-admin-unlock-empty">当前比赛还没有已锁定参与人。</p>
+                  <p className="wb-admin-unlock-empty">{managedFixture.matchCode} 还没有已锁定参与人。</p>
                 )
               ) : (
-                <p className="wb-admin-unlock-empty">只可调整当前开放投注的比赛。请切换到“开放下注”的比赛后再操作。</p>
+                <p className="wb-admin-unlock-empty">只可调整当前开放投注的比赛；切换比赛不会影响其他场次的下注。</p>
               )}
             </section>
-            <section className="wb-admin-section"><div><h3>赛果同步</h3><p>到达预设抓取时间后检查已配置数据源；数据源可随时替换。</p></div><button type="button" disabled={busy} onClick={() => void syncResults()}>立即检查</button></section>
-            <section className="wb-admin-form"><h3>导入赔率 JSON</h3><textarea aria-label="赔率 JSON" value={oddsJson} onChange={(event) => setOddsJson(event.target.value)} spellCheck={false} /><button type="button" disabled={busy} onClick={() => void importOdds()}>导入到当前比赛</button></section>
+
+            <section className="wb-admin-section">
+              <div><h3>赛果同步</h3><p>检查所有已到时间的比赛；API 不可用时仍可在下方人工复核。</p></div>
+              <button type="button" disabled={busy} onClick={() => void syncResults()}>立即检查</button>
+            </section>
+
             <section className="wb-admin-form">
-              <h3>人工复核比分</h3>
-              <p>半场比分用于半全场玩法；结算比分始终只填90分钟＋伤停补时。</p>
-              <div className="wb-score-inputs">
-                <label>半场主队<input inputMode="numeric" value={halfHome} onChange={(event) => setHalfHome(event.target.value)} placeholder="可空" /></label>
-                <label>半场客队<input inputMode="numeric" value={halfAway} onChange={(event) => setHalfAway(event.target.value)} placeholder="可空" /></label>
-                <label>90′主队<input inputMode="numeric" value={fullHome} onChange={(event) => setFullHome(event.target.value)} placeholder="0" /></label>
-                <label>90′客队<input inputMode="numeric" value={fullAway} onChange={(event) => setFullAway(event.target.value)} placeholder="0" /></label>
-              </div>
-              {fullHome !== "" && fullAway !== "" && Number(fullHome) === Number(fullAway) && (
-                <label className="wb-winner-select">
-                  加时或点球后的实际晋级方
-                  <select
-                    value={manualWinnerSide}
-                    onChange={(event) => setManualWinnerSide(event.target.value as "" | "home" | "away")}
+              <h3>导入 {managedFixture.matchCode} 赔率 JSON</h3>
+              <textarea aria-label={`${managedFixture.matchCode} 赔率 JSON`} value={oddsJson} onChange={(event) => setOddsJson(event.target.value)} spellCheck={false} />
+              <button
+                type="button"
+                disabled={busy || managedOddsLocked || managedFixture.homeTeam.placeholder || managedFixture.awayTeam.placeholder}
+                onClick={() => void importOdds()}
+              >
+                {managedOddsLocked ? "本场已固定锁定" : `导入到 ${managedFixture.matchCode}`}
+              </button>
+            </section>
+
+            <section className="wb-admin-form wb-manual-result-form">
+              <header className="wb-manual-result-head">
+                <div><h3>人工复核比分</h3><p id="wb-manual-result-note">{managedReviewState.detail}</p></div>
+                <span data-state={managedReviewState.kind}>{managedReviewState.label}</span>
+              </header>
+
+              {managedReviewState.kind === "settled" ? (
+                <div className="wb-admin-result-summary">
+                  <div><span>90分钟</span><strong>{managedFixture.regularTimeScore ? `${managedFixture.regularTimeScore.home} : ${managedFixture.regularTimeScore.away}` : "— : —"}</strong></div>
+                  {managedFixture.afterExtraTimeScore && (
+                    <div><span>加时后累计</span><strong>{managedFixture.afterExtraTimeScore.home} : {managedFixture.afterExtraTimeScore.away}</strong></div>
+                  )}
+                  {managedFixture.penaltyShootoutScore && (
+                    <div><span>点球大战</span><strong>{managedFixture.penaltyShootoutScore.home} : {managedFixture.penaltyShootoutScore.away}</strong></div>
+                  )}
+                  <div><span>最终胜方</span><strong>{managedWinnerTeam?.name ?? "已锁定"}</strong></div>
+                  <p>{managedFixture.resolvedAt ? `${shanghaiDateTime(managedFixture.resolvedAt)} 完成复核` : "本地账本已完成结算"}</p>
+                </div>
+              ) : managedReviewState.canSubmit ? (
+                <>
+                  <fieldset className="wb-result-score-group">
+                    <legend>半场比分 <small>仅有半全场玩法时必填</small></legend>
+                    <div className="wb-score-inputs">
+                      <label>{managedFixture.homeTeam.name}<input inputMode="numeric" pattern="[0-9]*" value={halfHome} onChange={(event) => { setHalfHome(normalizeScoreInput(event.target.value)); setManualResultError(null); }} placeholder="可空" /></label>
+                      <label>{managedFixture.awayTeam.name}<input inputMode="numeric" pattern="[0-9]*" value={halfAway} onChange={(event) => { setHalfAway(normalizeScoreInput(event.target.value)); setManualResultError(null); }} placeholder="可空" /></label>
+                    </div>
+                  </fieldset>
+
+                  <fieldset className="wb-result-score-group is-required">
+                    <legend>90分钟比分 <small>常规时间＋伤停补时</small></legend>
+                    <div className="wb-score-inputs">
+                      <label>{managedFixture.homeTeam.name}<input inputMode="numeric" pattern="[0-9]*" value={fullHome} onChange={(event) => updateRegulationScore("home", event.target.value)} placeholder="必填" /></label>
+                      <label>{managedFixture.awayTeam.name}<input inputMode="numeric" pattern="[0-9]*" value={fullAway} onChange={(event) => updateRegulationScore("away", event.target.value)} placeholder="必填" /></label>
+                    </div>
+                  </fieldset>
+
+                  {regulationIsDraw && (
+                    <fieldset className="wb-result-score-group is-resolution">
+                      <legend>加时后累计比分 <small>包含90分钟比分</small></legend>
+                      <div className="wb-score-inputs">
+                        <label>{managedFixture.homeTeam.name}<input inputMode="numeric" pattern="[0-9]*" value={afterExtraHome} onChange={(event) => updateAfterExtraScore("home", event.target.value)} placeholder="必填" /></label>
+                        <label>{managedFixture.awayTeam.name}<input inputMode="numeric" pattern="[0-9]*" value={afterExtraAway} onChange={(event) => updateAfterExtraScore("away", event.target.value)} placeholder="必填" /></label>
+                      </div>
+                    </fieldset>
+                  )}
+
+                  {regulationIsDraw && afterExtraIsDraw && (
+                    <fieldset className="wb-result-score-group is-penalty">
+                      <legend>点球大战比分 <small>只填点球，不计入比赛比分</small></legend>
+                      <div className="wb-score-inputs">
+                        <label>{managedFixture.homeTeam.name}<input inputMode="numeric" pattern="[0-9]*" value={penaltyHome} onChange={(event) => { setPenaltyHome(normalizeScoreInput(event.target.value)); setManualResultError(null); }} placeholder="必填" /></label>
+                        <label>{managedFixture.awayTeam.name}<input inputMode="numeric" pattern="[0-9]*" value={penaltyAway} onChange={(event) => { setPenaltyAway(normalizeScoreInput(event.target.value)); setManualResultError(null); }} placeholder="必填" /></label>
+                      </div>
+                    </fieldset>
+                  )}
+
+                  {manualResultError && (
+                    <div className="wb-sheet-error wb-manual-result-error" role="alert">
+                      <span>{manualResultError}</span>
+                      <button type="button" onClick={() => setManualResultError(null)} aria-label="关闭赛果错误提示">×</button>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    disabled={busy}
+                    aria-describedby="wb-manual-result-note"
+                    onClick={() => void saveManualResult()}
                   >
-                    <option value="">请选择</option>
-                    <option value="home">{selectedFixture.homeTeam.name}</option>
-                    <option value="away">{selectedFixture.awayTeam.name}</option>
-                  </select>
-                </label>
+                    {busy ? "正在写入本地账本…" : `复核并结算 ${managedFixture.matchCode}`}
+                  </button>
+                </>
+              ) : (
+                <div className="wb-admin-result-unavailable" data-state={managedReviewState.kind}>
+                  <b>{managedReviewState.label}</b>
+                  <p>{managedReviewState.detail}</p>
+                </div>
               )}
-              <button type="button" disabled={busy} onClick={() => void saveManualResult()}>复核并锁定赛果</button>
             </section>
           </div>
         </DialogShell>
       )}
 
-      {sheet === "unlock-confirm" && unlockTargetEntry && (
+      {sheet === "unlock-confirm" && unlockTargetEntry && managedFixture && (
         <DialogShell
-          title={!isActive
+          title={!managedIsActive
             ? "本场已到固定锁定时间"
             : unlockTargetEntry.canEdit
               ? "恢复锁定这份下注？"
               : `解锁${state.participants.find((person) => person.id === unlockTarget)?.name ?? "该参与人"}的下注？`}
-          eyebrow={`${selectedFixture.matchCode} · ${isActive ? "仅影响此人" : "下注不再可调整"}`}
+          eyebrow={`${managedFixture.matchCode} · ${managedIsActive ? "仅影响此人" : "下注不再可调整"}`}
           onClose={() => setSheet("manage")}
         >
           <div className="wb-sheet-body">
+            {error && (
+              <div className="wb-sheet-error" role="alert">
+                <span>{error}</span>
+                <button type="button" onClick={() => setError(null)} aria-label="关闭错误提示">×</button>
+              </div>
+            )}
             <div className="wb-confirm-person">
               <span>
                 <ParticipantAvatar participantId={unlockTargetEntry.participantId} className="wb-avatar-confirm" />
@@ -1627,11 +2054,11 @@ export function PoolWorkbench() {
             </div>
             <div className="wb-confirm-list">
               {state.bets
-                .filter((bet) => bet.fixtureId === selectedFixture.id && bet.participantId === unlockTargetEntry.participantId)
+                .filter((bet) => bet.fixtureId === managedFixture.id && bet.participantId === unlockTargetEntry.participantId)
                 .map((bet, index) => <p key={bet.id}><span>{index + 1}. {bet.label}</span><strong>{bet.odds.toFixed(2)}</strong></p>)}
             </div>
             <p className="wb-sheet-note">
-              {!isActive
+              {!managedIsActive
                 ? "固定锁定时间已到，原注单保持有效；当前不能再改变任何人的解锁状态。"
                 : unlockTargetEntry.canEdit
                 ? "恢复锁定会关闭此人的编辑权限，原注单继续有效；其他参与人的下注不受影响。"
@@ -1639,8 +2066,8 @@ export function PoolWorkbench() {
             </p>
           </div>
           <footer className="wb-sheet-footer wb-confirm-footer">
-            <button type="button" disabled={busy || !isActive} onClick={() => void setSelectedEntryUnlocked(unlockTargetEntry, !unlockTargetEntry.canEdit)}>
-              {!isActive ? "已固定锁定" : busy ? "正在调整…" : unlockTargetEntry.canEdit ? "确认恢复锁定" : "确认单独解锁"}
+            <button type="button" disabled={busy || !managedIsActive} onClick={() => void setSelectedEntryUnlocked(unlockTargetEntry, !unlockTargetEntry.canEdit)}>
+              {!managedIsActive ? "已固定锁定" : busy ? "正在调整…" : unlockTargetEntry.canEdit ? "确认恢复锁定" : "确认单独解锁"}
             </button>
           </footer>
         </DialogShell>

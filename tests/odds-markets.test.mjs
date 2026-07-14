@@ -4,12 +4,19 @@ import test from "node:test";
 import {
   createSeedState,
   deriveFixtureStates,
-  isFixtureBettingWindowOpen,
   gradeSelection,
+  isGradeableOddsSelection,
+  isFixtureBettingWindowOpen,
+  isManualReviewOpen,
+  knockoutResultValidationError,
+  MANUAL_REVIEW_DELAY_MS,
+  manualReviewOpensAt,
   matchScoreValidationError,
   normalizeApiFootballFixture,
+  winnerSideFromKnockoutScores,
 } from "../lib/app-data.ts";
 import { ALL_SEED_ODDS, SEED_ODDS_BY_FIXTURE } from "../lib/seed-odds.ts";
+import { settlePool } from "../lib/settlement.ts";
 
 test("seeds all screenshot options for the first two fixtures", () => {
   assert.equal(SEED_ODDS_BY_FIXTURE["wc2026-m101"].length, 54);
@@ -17,17 +24,14 @@ test("seeds all screenshot options for the first two fixtures", () => {
   assert.equal(ALL_SEED_ODDS.length, 108);
   assert.equal(new Set(ALL_SEED_ODDS.map((offer) => offer.id)).size, 108);
   for (const offer of ALL_SEED_ODDS) {
-    assert.notEqual(
-      gradeSelection(
-        offer.marketType,
-        offer.selectionCode,
-        { home: 2, away: 1 },
-        { home: 1, away: 0 },
-      ),
-      "unsupported",
+    assert.equal(
+      isGradeableOddsSelection(offer.marketType, offer.selectionCode),
+      true,
       `${offer.marketType}/${offer.selectionCode} must be auto-gradable`,
     );
   }
+  assert.equal(isGradeableOddsSelection("UNKNOWN_MARKET", "HOME"), false);
+  assert.equal(isGradeableOddsSelection("ASIAN_HANDICAP", "HOME:+0.25"), false);
 });
 
 test("grades screenshot-only markets from half-time and regulation scores", () => {
@@ -80,6 +84,173 @@ test("rejects impossible half-time and 90-minute score combinations", () => {
     ),
     /90分钟比分/,
   );
+});
+
+test("validates and derives regulation, extra-time, and shoot-out winners", () => {
+  const cases = [
+    {
+      name: "90-minute home win",
+      regulation: { home: 2, away: 1 },
+      extraTime: null,
+      penalty: null,
+      winnerSide: "home",
+    },
+    {
+      name: "extra-time home win after a regulation draw",
+      regulation: { home: 1, away: 1 },
+      extraTime: { home: 2, away: 1 },
+      penalty: null,
+      winnerSide: "home",
+    },
+    {
+      name: "away shoot-out win after regulation and extra-time draws",
+      regulation: { home: 1, away: 1 },
+      extraTime: { home: 2, away: 2 },
+      penalty: { home: 4, away: 5 },
+      winnerSide: "away",
+    },
+  ];
+
+  for (const fixtureCase of cases) {
+    assert.equal(
+      knockoutResultValidationError(
+        fixtureCase.regulation,
+        fixtureCase.extraTime,
+        fixtureCase.penalty,
+      ),
+      null,
+      fixtureCase.name,
+    );
+    assert.equal(
+      winnerSideFromKnockoutScores(
+        fixtureCase.regulation,
+        fixtureCase.extraTime,
+        fixtureCase.penalty,
+      ),
+      fixtureCase.winnerSide,
+      fixtureCase.name,
+    );
+  }
+});
+
+test("rejects incomplete or contradictory knockout score branches", () => {
+  const invalidCases = [
+    {
+      name: "extra time after a regulation winner",
+      regulation: { home: 2, away: 1 },
+      extraTime: { home: 3, away: 1 },
+      penalty: null,
+      message: /90分钟已有胜方/,
+    },
+    {
+      name: "missing extra time after a regulation draw",
+      regulation: { home: 1, away: 1 },
+      extraTime: null,
+      penalty: null,
+      message: /必须填写加时赛结束后的累计比分/,
+    },
+    {
+      name: "incomplete extra-time score",
+      regulation: { home: 1, away: 1 },
+      extraTime: { home: 2 },
+      penalty: null,
+      message: /加时赛比分必须同时填写/,
+    },
+    {
+      name: "extra-time cumulative score below regulation",
+      regulation: { home: 1, away: 1 },
+      extraTime: { home: 0, away: 1 },
+      penalty: null,
+      message: /不能低于90分钟比分/,
+    },
+    {
+      name: "shoot-out supplied after an extra-time winner",
+      regulation: { home: 1, away: 1 },
+      extraTime: { home: 2, away: 1 },
+      penalty: { home: 4, away: 3 },
+      message: /加时赛已有胜方/,
+    },
+    {
+      name: "missing shoot-out after an extra-time draw",
+      regulation: { home: 1, away: 1 },
+      extraTime: { home: 2, away: 2 },
+      penalty: null,
+      message: /必须填写点球大战比分/,
+    },
+    {
+      name: "incomplete shoot-out score",
+      regulation: { home: 1, away: 1 },
+      extraTime: { home: 2, away: 2 },
+      penalty: { home: 4 },
+      message: /点球比分必须同时填写/,
+    },
+    {
+      name: "drawn shoot-out",
+      regulation: { home: 1, away: 1 },
+      extraTime: { home: 2, away: 2 },
+      penalty: { home: 4, away: 4 },
+      message: /点球大战比分不能为平局/,
+    },
+  ];
+
+  for (const fixtureCase of invalidCases) {
+    assert.match(
+      knockoutResultValidationError(
+        fixtureCase.regulation,
+        fixtureCase.extraTime,
+        fixtureCase.penalty,
+      ) ?? "",
+      fixtureCase.message,
+      fixtureCase.name,
+    );
+  }
+});
+
+test("the eventual knockout winner cannot change grading or money for the same 90-minute score", () => {
+  const regulation = { home: 1, away: 1 };
+  const halfTime = { home: 0, away: 0 };
+  const selections = [
+    { id: "draw", market: "MATCH_RESULT", pick: "DRAW", odds: 2 },
+    { id: "home", market: "MATCH_RESULT", pick: "HOME", odds: 3 },
+    { id: "score", market: "EXACT_SCORE", pick: "1-1", odds: 4 },
+    { id: "half-full", market: "HALF_FULL_TIME", pick: "DRAW_DRAW", odds: 5 },
+  ];
+
+  function resolveAndSettle(extraTime, penalty) {
+    const grades = selections.map((selection) =>
+      gradeSelection(
+        selection.market,
+        selection.pick,
+        regulation,
+        halfTime,
+      ),
+    );
+    return {
+      winnerSide: winnerSideFromKnockoutScores(regulation, extraTime, penalty),
+      grades,
+      settlement: settlePool({
+        poolFen: 4_000,
+        tickets: selections.map((selection, index) => ({
+          ticketId: selection.id,
+          ticketSequence: index,
+          odds: selection.odds,
+          outcome: grades[index],
+        })),
+      }),
+    };
+  }
+
+  const homeAfterExtraTime = resolveAndSettle({ home: 2, away: 1 }, null);
+  const awayAfterPenalties = resolveAndSettle(
+    { home: 2, away: 2 },
+    { home: 4, away: 5 },
+  );
+
+  assert.equal(homeAfterExtraTime.winnerSide, "home");
+  assert.equal(awayAfterPenalties.winnerSide, "away");
+  assert.deepEqual(homeAfterExtraTime.grades, ["won", "lost", "won", "won"]);
+  assert.deepEqual(awayAfterPenalties.grades, homeAfterExtraTime.grades);
+  assert.deepEqual(awayAfterPenalties.settlement, homeAfterExtraTime.settlement);
 });
 
 test("API-Football ET, AET and PEN results settle strictly from score.fulltime", () => {
@@ -329,6 +500,102 @@ test("keeps later fixtures locked until the prior fixture settles", () => {
   );
   assert.equal(completed.activeFixtureId, null);
   assert.equal(completed.nextFixtureId, null);
+});
+
+test("keeps all four fixtures selectable while the next fixture advances", () => {
+  const now = "2026-07-15T12:00:00+08:00";
+  const seed = createSeedState(now);
+  const withOffers = seed.fixtures.map((fixture) => ({
+    ...fixture,
+    offers: [
+      {
+        id: `${fixture.id}-home`,
+        fixtureId: fixture.id,
+        marketType: "MATCH_RESULT",
+        selectionCode: "HOME",
+        label: `${fixture.homeTeam.name}胜`,
+        odds: 2,
+        rulesText: "90分钟",
+        source: "test",
+        active: true,
+        uploadedAt: now,
+      },
+    ],
+  }));
+
+  const afterM101 = deriveFixtureStates(
+    withOffers.map((fixture) =>
+      fixture.matchCode === "M101"
+        ? { ...fixture, recordStatus: "settled", winnerSide: "away" }
+        : fixture,
+    ),
+    now,
+  );
+
+  assert.deepEqual(
+    afterM101.fixtures.map(({ matchCode, status }) => ({ matchCode, status })),
+    [
+      { matchCode: "M101", status: "settled" },
+      { matchCode: "M102", status: "active" },
+      { matchCode: "M103", status: "locked" },
+      { matchCode: "M104", status: "locked" },
+    ],
+  );
+  assert.equal(afterM101.nextFixtureId, "wc2026-m102");
+  assert.equal(afterM101.fixtures.length, 4, "completed fixtures must remain in history");
+
+  const resolvedTeams = afterM101.fixtures.map((fixture) => {
+    if (fixture.matchCode === "M102") {
+      return { ...fixture, recordStatus: "settled", winnerSide: "home" };
+    }
+    if (fixture.matchCode === "M103") {
+      return {
+        ...fixture,
+        homeTeam: { code: "FRA", name: "法国", englishName: "France" },
+        awayTeam: { code: "ARG", name: "阿根廷", englishName: "Argentina" },
+      };
+    }
+    if (fixture.matchCode === "M104") {
+      return {
+        ...fixture,
+        homeTeam: { code: "ESP", name: "西班牙", englishName: "Spain" },
+        awayTeam: { code: "ENG", name: "英格兰", englishName: "England" },
+      };
+    }
+    return fixture;
+  });
+  const afterM102 = deriveFixtureStates(
+    resolvedTeams,
+    "2026-07-16T12:00:00+08:00",
+  );
+
+  assert.deepEqual(
+    afterM102.fixtures.map(({ matchCode, status }) => ({ matchCode, status })),
+    [
+      { matchCode: "M101", status: "settled" },
+      { matchCode: "M102", status: "settled" },
+      { matchCode: "M103", status: "active" },
+      { matchCode: "M104", status: "locked" },
+    ],
+  );
+  assert.equal(afterM102.nextFixtureId, "wc2026-m103");
+  assert.deepEqual(
+    afterM102.fixtures.map((fixture) => fixture.matchCode),
+    ["M101", "M102", "M103", "M104"],
+  );
+});
+
+test("manual review opens at the exact kickoff plus three-hour boundary", () => {
+  const kickoffAt = "2026-07-15T03:00:00+08:00";
+  const kickoffMs = Date.parse(kickoffAt);
+  const reviewAt = manualReviewOpensAt(kickoffAt);
+
+  assert.equal(reviewAt, kickoffMs + MANUAL_REVIEW_DELAY_MS);
+  assert.equal(isManualReviewOpen(kickoffAt, reviewAt - 1), false, "T+3h-1ms");
+  assert.equal(isManualReviewOpen(kickoffAt, reviewAt), true, "T+3h");
+  assert.equal(isManualReviewOpen(kickoffAt, reviewAt + 1), true, "T+3h+1ms");
+  assert.equal(isManualReviewOpen("not-a-date", reviewAt), false);
+  assert.equal(isManualReviewOpen(kickoffAt, "not-a-date"), false);
 });
 
 test("the betting window closes exactly at the fixed lock time", () => {

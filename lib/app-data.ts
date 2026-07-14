@@ -1,10 +1,32 @@
-export const APP_STATE_VERSION = 4 as const;
+export const APP_STATE_VERSION = 5 as const;
 export const STAKE_CENTS = 1_000;
 export const MAX_BETS_PER_PARTICIPANT = 3;
 export const LOCK_MINUTES_BEFORE_KICKOFF = 120;
+export const MANUAL_REVIEW_DELAY_MS = 3 * 60 * 60 * 1_000;
 export const RESULT_BASIS = "REGULATION_PLUS_STOPPAGE" as const;
 export const DEFAULT_RULES_TEXT =
   "只按90分钟常规时间及伤停补时结算，不包含加时赛与点球大战。";
+
+export function manualReviewOpensAt(kickoffAt: string): number {
+  const kickoffMs = Date.parse(kickoffAt);
+  return Number.isFinite(kickoffMs)
+    ? kickoffMs + MANUAL_REVIEW_DELAY_MS
+    : Number.NaN;
+}
+
+export function isManualReviewOpen(
+  kickoffAt: string,
+  now: string | number | Date,
+): boolean {
+  const reviewAt = manualReviewOpensAt(kickoffAt);
+  const nowMs =
+    now instanceof Date
+      ? now.getTime()
+      : typeof now === "number"
+        ? now
+        : Date.parse(now);
+  return Number.isFinite(reviewAt) && Number.isFinite(nowMs) && nowMs >= reviewAt;
+}
 
 export type ParticipantId =
   | "gao"
@@ -137,6 +159,85 @@ export function winnerSideFromRegulationScore(
   if (score.home > score.away) return "home";
   if (score.away > score.home) return "away";
   return null;
+}
+
+function completeKnockoutScoreError(
+  label: string,
+  score: MatchScoreInput | null,
+): string | null {
+  if (score === null) return null;
+  if (
+    !Number.isSafeInteger(score.home) ||
+    !Number.isSafeInteger(score.away) ||
+    (score.home as number) < 0 ||
+    (score.away as number) < 0 ||
+    (score.home as number) > 99 ||
+    (score.away as number) > 99
+  ) {
+    return `${label}必须同时填写0到99之间的整数。`;
+  }
+  return null;
+}
+
+/**
+ * Validates the complete knockout result while keeping pool grading anchored
+ * to the regulation score. Extra-time values are the cumulative score at the
+ * end of 120 minutes; shoot-out values are displayed separately in brackets.
+ */
+export function knockoutResultValidationError(
+  regularTime: RegulationScore,
+  extraTime: MatchScoreInput | null,
+  penalty: MatchScoreInput | null,
+): string | null {
+  const regulationWinner = winnerSideFromRegulationScore(regularTime);
+  if (regulationWinner) {
+    if (extraTime !== null || penalty !== null) {
+      return "90分钟已有胜方，不应再填写加时赛或点球比分。";
+    }
+    return null;
+  }
+
+  if (extraTime === null) {
+    return "90分钟战平时，必须填写加时赛结束后的累计比分。";
+  }
+  const extraError = completeKnockoutScoreError("加时赛比分", extraTime);
+  if (extraError) return extraError;
+  const normalizedExtra = extraTime as RegulationScore;
+  if (
+    normalizedExtra.home < regularTime.home ||
+    normalizedExtra.away < regularTime.away
+  ) {
+    return "加时赛结束比分不能低于90分钟比分。";
+  }
+
+  const extraWinner = winnerSideFromRegulationScore(normalizedExtra);
+  if (extraWinner) {
+    if (penalty !== null) return "加时赛已有胜方，不应再填写点球比分。";
+    return null;
+  }
+
+  if (penalty === null) {
+    return "加时赛后仍然战平时，必须填写点球大战比分。";
+  }
+  const penaltyError = completeKnockoutScoreError("点球比分", penalty);
+  if (penaltyError) return penaltyError;
+  const normalizedPenalty = penalty as RegulationScore;
+  if (normalizedPenalty.home === normalizedPenalty.away) {
+    return "点球大战比分不能为平局。";
+  }
+  return null;
+}
+
+export function winnerSideFromKnockoutScores(
+  regularTime: RegulationScore,
+  extraTime: RegulationScore | null,
+  penalty: RegulationScore | null,
+): KnockoutWinnerSide | null {
+  return (
+    winnerSideFromRegulationScore(regularTime) ??
+    (extraTime ? winnerSideFromRegulationScore(extraTime) : null) ??
+    (penalty ? winnerSideFromRegulationScore(penalty) : null)
+  );
 }
 
 function apiFootballWinnerSide(
@@ -388,7 +489,11 @@ export interface Fixture {
   isBettingOpen: boolean;
   halfTimeScore: RegulationScore | null;
   regularTimeScore: RegulationScore | null;
+  afterExtraTimeScore: RegulationScore | null;
+  penaltyShootoutScore: RegulationScore | null;
   resultSource: ResultSource | null;
+  resolutionSource: ResultSource | null;
+  resolvedAt: string | null;
   resultBasis: typeof RESULT_BASIS | null;
   reviewNote: string | null;
   offers: OddsOffer[];
@@ -496,7 +601,10 @@ export interface ManualResultRequest {
   halfAway?: number;
   regulationHome: number;
   regulationAway: number;
-  winnerSide?: KnockoutWinnerSide;
+  afterExtraTimeHome?: number;
+  afterExtraTimeAway?: number;
+  penaltyShootoutHome?: number;
+  penaltyShootoutAway?: number;
   reason: string;
 }
 
@@ -525,7 +633,11 @@ type SeedFixture = Omit<
   | "settlement"
   | "halfTimeScore"
   | "regularTimeScore"
+  | "afterExtraTimeScore"
+  | "penaltyShootoutScore"
   | "resultSource"
+  | "resolutionSource"
+  | "resolvedAt"
   | "resultBasis"
   | "reviewNote"
   | "winnerSide"
@@ -707,7 +819,11 @@ export function createSeedState(now = new Date().toISOString()): AppState {
     isBettingOpen: false,
     halfTimeScore: null,
     regularTimeScore: null,
+    afterExtraTimeScore: null,
+    penaltyShootoutScore: null,
     resultSource: null,
+    resolutionSource: null,
+    resolvedAt: null,
     resultBasis: null,
     reviewNote: null,
     winnerSide: null,
@@ -875,4 +991,21 @@ export function gradeSelection(
   }
 
   return "unsupported";
+}
+
+/**
+ * Checks whether an imported offer can always be decided from a complete
+ * half-time and regulation score. The sample scores only exercise the parser;
+ * every recognized selection returns won/lost/void for any complete result.
+ */
+export function isGradeableOddsSelection(
+  marketType: string,
+  selectionCode: string,
+): boolean {
+  return gradeSelection(
+    marketType,
+    selectionCode,
+    { home: 2, away: 1 },
+    { home: 1, away: 0 },
+  ) !== "unsupported";
 }

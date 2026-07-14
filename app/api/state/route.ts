@@ -16,7 +16,10 @@ import {
   deriveFixtureStates,
   FIXTURES,
   gradeSelection,
+  isGradeableOddsSelection,
   isFixtureBettingWindowOpen,
+  isManualReviewOpen,
+  knockoutResultValidationError,
   matchScoreValidationError,
   MAX_BETS_PER_PARTICIPANT,
   PARTICIPANTS,
@@ -32,11 +35,12 @@ import {
   type KnockoutWinnerSide,
   type OddsOffer,
   type ParticipantId,
+  type RegulationScore,
   type SetEntryEditUnlockedRequest,
   type Settlement,
   type StateMutationRequest,
   type UploadOddsRequest,
-  winnerSideFromRegulationScore,
+  winnerSideFromKnockoutScores,
 } from "@/lib/app-data";
 import {
   fixtureTeamsAreResolved,
@@ -299,6 +303,14 @@ async function loadState(db: Database, now = new Date().toISOString()): Promise<
       row.regularHome === null || row.regularAway === null
         ? null
         : { home: row.regularHome, away: row.regularAway },
+    afterExtraTimeScore:
+      row.afterExtraHome === null || row.afterExtraAway === null
+        ? null
+        : { home: row.afterExtraHome, away: row.afterExtraAway },
+    penaltyShootoutScore:
+      row.penaltyHome === null || row.penaltyAway === null
+        ? null
+        : { home: row.penaltyHome, away: row.penaltyAway },
     resultSource:
       row.resultSource === "manual" ||
       row.resultSource === "api-football" ||
@@ -306,6 +318,14 @@ async function loadState(db: Database, now = new Date().toISOString()): Promise<
       row.resultSource === "external-provider"
         ? row.resultSource
         : null,
+    resolutionSource:
+      row.resolutionSource === "manual" ||
+      row.resolutionSource === "api-football" ||
+      row.resolutionSource === "football-data.org" ||
+      row.resolutionSource === "external-provider"
+        ? row.resolutionSource
+        : null,
+    resolvedAt: row.resolvedAt,
     resultBasis: row.resultBasis === RESULT_BASIS ? RESULT_BASIS : null,
     reviewNote: row.reviewNote,
     offers: offersByFixture.get(row.id) ?? [],
@@ -795,6 +815,11 @@ function validateOfferPayload(payload: UploadOddsRequest) {
     if (!Number.isFinite(offer.odds) || offer.odds <= 1 || offer.odds > 100_000) {
       badRequest(`第${index + 1}个赔率必须是大于1的有效十进制赔率。`);
     }
+    if (!isGradeableOddsSelection(offer.marketType, offer.selectionCode)) {
+      badRequest(
+        `第${index + 1}个赔率玩法暂不支持按比分结算，请检查 marketType 和 selectionCode。`,
+      );
+    }
     const key = `${offer.marketType.trim().toUpperCase()}::${offer.selectionCode
       .trim()
       .toUpperCase()}`;
@@ -857,11 +882,35 @@ async function uploadOdds(db: Database, payload: UploadOddsRequest, now: string)
   }
 }
 
+interface ResolutionInput {
+  afterExtraTimeScore: RegulationScore | null;
+  penaltyShootoutScore: RegulationScore | null;
+  source: "external-provider" | "api-football" | "football-data.org" | "manual";
+  note: string;
+}
+
+function storedResolutionScoreChanged(
+  storedHome: number | null,
+  storedAway: number | null,
+  incoming: RegulationScore | null,
+  label: string,
+): boolean {
+  if ((storedHome === null) !== (storedAway === null)) {
+    throw new FixtureProgressionError(`已保存的${label}不完整，请先检查数据库。`);
+  }
+  if (storedHome === null || storedAway === null) return incoming !== null;
+  if (!incoming || storedHome !== incoming.home || storedAway !== incoming.away) {
+    throw new FixtureProgressionError(`本场${label}已按另一份赛果锁定，不能覆盖。`);
+  }
+  return false;
+}
+
 async function persistProgression(
   db: Database,
   sourceFixtureId: string,
   winnerSide: KnockoutWinnerSide,
   now: string,
+  resolution?: ResolutionInput,
 ) {
   try {
     await db.transaction(async (tx) => {
@@ -874,13 +923,105 @@ async function persistProgression(
         sourceFixtureId,
         winnerSide,
       );
-      const sourceUpdated = await tx
-        .update(fixtures)
-        .set({ winnerSide: currentPlan.winnerSide, updatedAt: now })
-        .where(eq(fixtures.id, currentPlan.sourceFixtureId))
-        .returning({ id: fixtures.id });
-      if (sourceUpdated.length !== 1) {
-        throw new FixtureProgressionError("比赛状态刚刚发生变化，请刷新后重试。");
+      const sourceFixture = fixtureRows.find(
+        (fixture) => fixture.id === currentPlan.sourceFixtureId,
+      );
+      if (!sourceFixture) {
+        throw new FixtureProgressionError("比赛不存在，无法写入完整赛果。");
+      }
+
+      const winnerChanged = sourceFixture.winnerSide === null;
+      let extraTimeChanged = false;
+      let penaltyChanged = false;
+      let resolutionMetadataMissing = false;
+      if (resolution) {
+        extraTimeChanged = storedResolutionScoreChanged(
+          sourceFixture.afterExtraHome,
+          sourceFixture.afterExtraAway,
+          resolution.afterExtraTimeScore,
+          "加时赛比分",
+        );
+        penaltyChanged = storedResolutionScoreChanged(
+          sourceFixture.penaltyHome,
+          sourceFixture.penaltyAway,
+          resolution.penaltyShootoutScore,
+          "点球比分",
+        );
+        resolutionMetadataMissing =
+          sourceFixture.resolutionSource === null || sourceFixture.resolvedAt === null;
+      }
+
+      const resolutionChanged =
+        winnerChanged || extraTimeChanged || penaltyChanged || resolutionMetadataMissing;
+      if (resolutionChanged) {
+        const sourceUpdated = await tx
+          .update(fixtures)
+          .set({
+            winnerSide: currentPlan.winnerSide,
+            ...(resolution
+              ? {
+                  afterExtraHome: resolution.afterExtraTimeScore?.home ?? null,
+                  afterExtraAway: resolution.afterExtraTimeScore?.away ?? null,
+                  penaltyHome: resolution.penaltyShootoutScore?.home ?? null,
+                  penaltyAway: resolution.penaltyShootoutScore?.away ?? null,
+                  resolutionSource: sourceFixture.resolutionSource ?? resolution.source,
+                  resolvedAt: sourceFixture.resolvedAt ?? now,
+                }
+              : {}),
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(fixtures.id, currentPlan.sourceFixtureId),
+              sourceFixture.winnerSide === null
+                ? isNull(fixtures.winnerSide)
+                : eq(fixtures.winnerSide, sourceFixture.winnerSide),
+              sourceFixture.afterExtraHome === null
+                ? isNull(fixtures.afterExtraHome)
+                : eq(fixtures.afterExtraHome, sourceFixture.afterExtraHome),
+              sourceFixture.afterExtraAway === null
+                ? isNull(fixtures.afterExtraAway)
+                : eq(fixtures.afterExtraAway, sourceFixture.afterExtraAway),
+              sourceFixture.penaltyHome === null
+                ? isNull(fixtures.penaltyHome)
+                : eq(fixtures.penaltyHome, sourceFixture.penaltyHome),
+              sourceFixture.penaltyAway === null
+                ? isNull(fixtures.penaltyAway)
+                : eq(fixtures.penaltyAway, sourceFixture.penaltyAway),
+              sourceFixture.resolutionSource === null
+                ? isNull(fixtures.resolutionSource)
+                : eq(fixtures.resolutionSource, sourceFixture.resolutionSource),
+              sourceFixture.resolvedAt === null
+                ? isNull(fixtures.resolvedAt)
+                : eq(fixtures.resolvedAt, sourceFixture.resolvedAt),
+            ),
+          )
+          .returning({ id: fixtures.id });
+        if (sourceUpdated.length !== 1) {
+          throw new FixtureProgressionError("比赛状态刚刚发生变化，请刷新后重试。");
+        }
+      }
+
+      if (resolution && resolutionChanged) {
+        await tx.insert(resultAudits).values({
+          id: crypto.randomUUID(),
+          fixtureId: sourceFixture.id,
+          source: resolution.source,
+          outcome: "resolution_recorded",
+          message: resolution.note,
+          providerStatus: resolution.source === "manual" ? "MANUAL" : null,
+          halfHome: sourceFixture.halfHome,
+          halfAway: sourceFixture.halfAway,
+          regularHome: sourceFixture.regularHome,
+          regularAway: sourceFixture.regularAway,
+          afterExtraHome: resolution.afterExtraTimeScore?.home ?? null,
+          afterExtraAway: resolution.afterExtraTimeScore?.away ?? null,
+          penaltyHome: resolution.penaltyShootoutScore?.home ?? null,
+          penaltyAway: resolution.penaltyShootoutScore?.away ?? null,
+          winnerSide: currentPlan.winnerSide,
+          resolutionSource: resolution.source,
+          createdAt: now,
+        });
       }
       for (const patch of currentPlan.teamPatches) {
         const updated = patch.side === "home"
@@ -933,6 +1074,8 @@ interface SettleInput {
   halfAway: number | null;
   regularHome: number;
   regularAway: number;
+  afterExtraTimeScore: RegulationScore | null;
+  penaltyShootoutScore: RegulationScore | null;
   winnerSide: KnockoutWinnerSide;
   source: "external-provider" | "api-football" | "football-data.org" | "manual";
   note: string;
@@ -951,16 +1094,6 @@ function settlementMatchesInput(
   );
 }
 
-function settlementRegulationMatchesInput(
-  settlement: typeof settlements.$inferSelect,
-  input: SettleInput,
-): boolean {
-  return (
-    settlement.regularHome === input.regularHome &&
-    settlement.regularAway === input.regularAway
-  );
-}
-
 async function settleFixture(db: Database, input: SettleInput) {
   const fixtureRows = await db.select().from(fixtures).orderBy(asc(fixtures.sequence));
   const fixture = fixtureRows.find((row) => row.id === input.fixtureId);
@@ -971,15 +1104,18 @@ async function settleFixture(db: Database, input: SettleInput) {
       .from(settlements)
       .where(eq(settlements.fixtureId, fixture.id))
       .limit(1);
-    if (
-      existingSettlement &&
-      settlementRegulationMatchesInput(existingSettlement, input)
-    ) {
+    if (existingSettlement && settlementMatchesInput(existingSettlement, input)) {
       await persistProgression(
         db,
         fixture.id,
         input.winnerSide,
         input.now,
+        {
+          afterExtraTimeScore: input.afterExtraTimeScore,
+          penaltyShootoutScore: input.penaltyShootoutScore,
+          source: input.source,
+          note: input.note,
+        },
       );
       return;
     }
@@ -1015,6 +1151,12 @@ async function settleFixture(db: Database, input: SettleInput) {
   }));
   const unsupported = graded.filter((item) => item.grade === "unsupported");
   if (unsupported.length > 0) {
+    if (input.source === "manual") {
+      badRequest(
+        `有${unsupported.length}注无法按当前比分判定。若包含半全场玩法，请补齐半场比分；否则请检查赔率玩法。`,
+        409,
+      );
+    }
     const message = `有${unsupported.length}注无法仅凭常规时间比分自动判定，需要人工复核。`;
     const [firstUnsupported, ...remainingUnsupported] = unsupported;
     await db.batch([
@@ -1178,11 +1320,16 @@ async function settleFixture(db: Database, input: SettleInput) {
       badRequest("本场已经按另一份赛果结算，不能覆盖。", 409);
     }
   }
-  // Settlement and bracket advancement are deliberately separate. If the
-  // process stops between them, the settled fixture remains winner-less and is
-  // picked up by the next sync; this verified transaction is therefore safely
-  // retryable without ever rolling back a valid 90-minute pool settlement.
-  await persistProgression(db, fixture.id, input.winnerSide, input.now);
+  // Financial settlement remains anchored to half-time and 90-minute scores.
+  // The complete knockout result, its audit row and all bracket patches are a
+  // separate atomic transaction. A retry after an interruption enriches the
+  // existing settlement without grading or paying any ticket a second time.
+  await persistProgression(db, fixture.id, input.winnerSide, input.now, {
+    afterExtraTimeScore: input.afterExtraTimeScore,
+    penaltyShootoutScore: input.penaltyShootoutScore,
+    source: input.source,
+    note: input.note,
+  });
 }
 
 async function manualResult(db: Database, payload: ManualResultRequest, now: string) {
@@ -1196,24 +1343,47 @@ async function manualResult(db: Database, payload: ManualResultRequest, now: str
     hasHalf ? { home: payload.halfHome, away: payload.halfAway } : null,
   );
   if (scoreError) badRequest(scoreError, 400);
-  if (
-    payload.winnerSide !== undefined &&
-    payload.winnerSide !== "home" &&
-    payload.winnerSide !== "away"
-  ) {
-    badRequest("实际晋级方必须选择主队或客队。", 400);
-  }
-  const scoreWinnerSide = winnerSideFromRegulationScore(regularTimeScore);
-  if (
-    scoreWinnerSide &&
-    payload.winnerSide &&
-    payload.winnerSide !== scoreWinnerSide
-  ) {
-    badRequest("90分钟比分已有胜方，实际晋级方不能与比分冲突。", 400);
-  }
-  const winnerSide = scoreWinnerSide ?? payload.winnerSide;
+  const rawAfterExtraTimeScore =
+    payload.afterExtraTimeHome === undefined &&
+    payload.afterExtraTimeAway === undefined
+      ? null
+      : {
+          home: payload.afterExtraTimeHome,
+          away: payload.afterExtraTimeAway,
+        };
+  const rawPenaltyShootoutScore =
+    payload.penaltyShootoutHome === undefined &&
+    payload.penaltyShootoutAway === undefined
+      ? null
+      : {
+          home: payload.penaltyShootoutHome,
+          away: payload.penaltyShootoutAway,
+        };
+  const knockoutError = knockoutResultValidationError(
+    regularTimeScore,
+    rawAfterExtraTimeScore,
+    rawPenaltyShootoutScore,
+  );
+  if (knockoutError) badRequest(knockoutError, 400);
+  const afterExtraTimeScore = rawAfterExtraTimeScore
+    ? {
+        home: rawAfterExtraTimeScore.home as number,
+        away: rawAfterExtraTimeScore.away as number,
+      }
+    : null;
+  const penaltyShootoutScore = rawPenaltyShootoutScore
+    ? {
+        home: rawPenaltyShootoutScore.home as number,
+        away: rawPenaltyShootoutScore.away as number,
+      }
+    : null;
+  const winnerSide = winnerSideFromKnockoutScores(
+    regularTimeScore,
+    afterExtraTimeScore,
+    penaltyShootoutScore,
+  );
   if (!winnerSide) {
-    badRequest("90分钟战平时，请选择加时或点球后的实际晋级方。", 400);
+    badRequest("完整赛果未能确定实际胜者，请检查加时赛和点球比分。", 400);
   }
   if (typeof payload.reason !== "string" || payload.reason.trim().length < 3) {
     badRequest("人工录入必须填写复核原因。", 400);
@@ -1224,8 +1394,8 @@ async function manualResult(db: Database, payload: ManualResultRequest, now: str
     .where(eq(fixtures.id, payload.fixtureId))
     .limit(1);
   if (!fixture) badRequest("比赛不存在。", 404);
-  if (Date.parse(now) < Date.parse(fixture.kickoffAt)) {
-    badRequest("比赛尚未开赛，不能录入赛果。", 409);
+  if (!isManualReviewOpen(fixture.kickoffAt, now)) {
+    badRequest("比赛开赛满3小时后才可人工复核赛果。", 409);
   }
   await settleFixture(db, {
     fixtureId: payload.fixtureId,
@@ -1233,9 +1403,11 @@ async function manualResult(db: Database, payload: ManualResultRequest, now: str
     halfAway: hasHalf ? (payload.halfAway as number) : null,
     regularHome: payload.regulationHome,
     regularAway: payload.regulationAway,
+    afterExtraTimeScore,
+    penaltyShootoutScore,
     winnerSide,
     source: "manual",
-    note: `人工复核：${payload.reason.trim()}；仅按90分钟及伤停补时。`,
+    note: `人工复核：${payload.reason.trim()}；奖池仅按90分钟及伤停补时结算。`,
     now,
   });
 }

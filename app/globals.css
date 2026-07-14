@@ -614,6 +614,15 @@ api-sports-widget[data-theme="WorldCup"] {
   font-variant-numeric: tabular-nums;
 }
 
+.wb-score strong small {
+  display: inline;
+  margin-left: 2px;
+  font-size: 0.58em;
+  font-weight: 900;
+  letter-spacing: -0.06em;
+  white-space: nowrap;
+}
+
 .wb-score span {
   display: block;
   margin-top: 5px;
@@ -1980,8 +1989,167 @@ api-sports-widget[data-theme="WorldCup"] {
   min-width: 0;
 }
 
+.wb-sheet-error {
+  position: sticky;
+  z-index: 4;
+  top: 0;
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in oklab, var(--alert) 45%, transparent);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--alert) 10%, var(--paper));
+  color: var(--alert);
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
+.wb-sheet-error button {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: color-mix(in oklab, var(--alert) 15%, transparent);
+  color: inherit;
+  font-size: 15px;
+  font-weight: 900;
+}
+
 .wb-admin-login-sheet {
   width: min(100%, 420px);
+}
+
+.wb-admin-fixture-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.wb-admin-fixture-picker > button {
+  display: flex;
+  min-width: 0;
+  min-height: 56px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+  color: var(--ink);
+  text-align: left;
+}
+
+.wb-admin-fixture-picker > button[aria-pressed="true"] {
+  border-color: var(--pitch);
+  background: var(--pitch-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--pitch) 32%, transparent);
+}
+
+.wb-admin-fixture-picker > button:disabled {
+  opacity: 0.55;
+}
+
+.wb-admin-fixture-picker span,
+.wb-admin-fixture-picker b,
+.wb-admin-fixture-picker small,
+.wb-admin-fixture-picker strong {
+  display: block;
+  min-width: 0;
+}
+
+.wb-admin-fixture-picker b {
+  font-size: 12px;
+  font-weight: 950;
+}
+
+.wb-admin-fixture-picker small {
+  margin-top: 2px;
+  color: var(--ink-soft);
+  font-size: 8px;
+}
+
+.wb-admin-fixture-picker strong {
+  flex: 0 1 auto;
+  color: var(--pitch-deep);
+  font-size: 8px;
+  font-weight: 900;
+  text-align: right;
+}
+
+.wb-admin-fixture-picker [data-state="too-early"] strong,
+.wb-admin-fixture-picker [data-state="matchup-pending"] strong,
+.wb-admin-fixture-picker [data-state="prior-pending"] strong {
+  color: var(--ink-soft);
+}
+
+.wb-admin-fixture-picker [data-state="settled"] strong {
+  color: var(--gold);
+}
+
+.wb-admin-fixture-summary {
+  position: relative;
+  display: grid;
+  gap: 3px;
+  padding: 10px 94px 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-muted);
+}
+
+.wb-admin-fixture-summary > span {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.wb-admin-fixture-summary b {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-admin-fixture-summary i {
+  color: var(--ink-soft);
+  font-size: 8px;
+  font-style: normal;
+}
+
+.wb-admin-fixture-summary small {
+  color: var(--ink-soft);
+  font-size: 8px;
+}
+
+.wb-admin-fixture-summary em {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  padding: 5px 7px;
+  border-radius: 999px;
+  background: var(--pitch-soft);
+  color: var(--pitch-deep);
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 900;
+  transform: translateY(-50%);
+}
+
+.wb-admin-fixture-summary em[data-state="settled"] {
+  background: var(--gold-soft);
+  color: var(--gold);
+}
+
+.wb-admin-fixture-summary em[data-state="too-early"],
+.wb-admin-fixture-summary em[data-state="matchup-pending"],
+.wb-admin-fixture-summary em[data-state="prior-pending"] {
+  background: var(--paper-deep);
+  color: var(--ink-soft);
 }
 
 .wb-admin-login {
@@ -2202,6 +2370,170 @@ api-sports-widget[data-theme="WorldCup"] {
   font-size: 12px;
   line-height: 1.45;
   resize: vertical;
+}
+
+.wb-manual-result-form {
+  display: grid;
+  gap: 10px;
+}
+
+.wb-manual-result-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.wb-manual-result-head > div {
+  min-width: 0;
+}
+
+.wb-manual-result-head p {
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.wb-manual-result-head > span {
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: var(--pitch-soft);
+  color: var(--pitch-deep);
+  font-size: 8px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.wb-manual-result-head > span[data-state="settled"] {
+  background: var(--gold-soft);
+  color: var(--gold);
+}
+
+.wb-manual-result-head > span[data-state="too-early"],
+.wb-manual-result-head > span[data-state="matchup-pending"],
+.wb-manual-result-head > span[data-state="prior-pending"] {
+  background: var(--paper-deep);
+  color: var(--ink-soft);
+}
+
+.wb-result-score-group {
+  min-width: 0;
+  margin: 0;
+  padding: 8px 9px 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+}
+
+.wb-result-score-group.is-required {
+  border-color: color-mix(in oklab, var(--pitch) 34%, var(--line));
+}
+
+.wb-result-score-group.is-resolution {
+  border-color: color-mix(in oklab, var(--gold) 45%, var(--line));
+  background: color-mix(in oklab, var(--gold-soft) 55%, var(--paper));
+}
+
+.wb-result-score-group.is-penalty {
+  border-color: color-mix(in oklab, var(--alert) 32%, var(--line));
+  background: color-mix(in oklab, var(--alert) 4%, var(--paper));
+}
+
+.wb-result-score-group legend {
+  padding: 0 5px;
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.wb-result-score-group legend small {
+  margin-left: 4px;
+  color: var(--ink-soft);
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.wb-result-score-group .wb-score-inputs {
+  margin: 4px 0 9px;
+}
+
+.wb-manual-result-error {
+  position: static;
+  margin: 0;
+}
+
+.wb-admin-result-unavailable {
+  padding: 17px 13px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface-muted);
+  text-align: center;
+}
+
+.wb-admin-result-unavailable b,
+.wb-admin-result-unavailable p {
+  display: block;
+  margin: 0;
+}
+
+.wb-admin-result-unavailable b {
+  font-size: 12px;
+}
+
+.wb-admin-result-unavailable p {
+  margin-top: 5px;
+  color: var(--ink-soft);
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.wb-admin-result-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+}
+
+.wb-admin-result-summary > div {
+  min-width: 0;
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.wb-admin-result-summary > div:nth-child(even) {
+  border-left: 1px solid var(--line);
+}
+
+.wb-admin-result-summary span,
+.wb-admin-result-summary strong {
+  display: block;
+}
+
+.wb-admin-result-summary span {
+  color: var(--ink-soft);
+  font-size: 8px;
+}
+
+.wb-admin-result-summary strong {
+  overflow: hidden;
+  margin-top: 3px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-admin-result-summary > p {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 8px 10px;
+  color: var(--ink-soft);
+  font-size: 8px;
+  text-align: center;
 }
 
 .wb-score-inputs {

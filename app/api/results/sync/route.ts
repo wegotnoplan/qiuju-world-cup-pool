@@ -43,6 +43,7 @@ const RETRYABLE_PROVIDER_STATUSES = new Set([
   "QUOTA_EXCEEDED",
   "NETWORK_ERROR",
   "UPSTREAM_ERROR",
+  "INVALID_RESPONSE",
   "DISCOVERY_ERROR",
   "MATCH_NOT_FOUND",
 ]);
@@ -813,6 +814,16 @@ async function runSync(force = false) {
 
   for (const fixture of dueFixtures) {
     const bracketResolutionOnly = fixture.status === "settled";
+    if (!force && (await isInAutoRetryCooldown(db, fixture.id, nowMs))) {
+      results.push({
+        fixtureId: fixture.id,
+        matchCode: fixture.matchCode,
+        outcome: "cooldown",
+        message: "刚刚检查过赛况，3分钟内不重复占用接口额度。",
+      });
+      continue;
+    }
+
     let providerMatchId = fixture.providerMatchId;
     if (!providerMatchId) {
       const discovery = await discoverProviderMatchId(fixture);
@@ -876,16 +887,6 @@ async function runSync(force = false) {
         now,
         discovery.providerStatus,
       );
-    }
-
-    if (!force && (await isInAutoRetryCooldown(db, fixture.id, nowMs))) {
-      results.push({
-        fixtureId: fixture.id,
-        matchCode: fixture.matchCode,
-        outcome: "cooldown",
-        message: "刚刚检查过赛况，3分钟内不重复占用接口额度。",
-      });
-      continue;
     }
 
     const providerResult = await provider.getMatch(providerMatchId);
