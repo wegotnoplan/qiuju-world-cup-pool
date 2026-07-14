@@ -39,6 +39,7 @@ export const fixtures = sqliteTable(
     resultSyncDueAt: text("result_sync_due_at").notNull(),
     providerMatchId: text("provider_match_id"),
     status: text("status").notNull().default("scheduled"),
+    winnerSide: text("winner_side"),
     halfHome: integer("half_home"),
     halfAway: integer("half_away"),
     regularHome: integer("regular_home"),

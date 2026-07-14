@@ -46,7 +46,9 @@ test("pool workbench includes avatar bets, frozen regulation score, and podium U
   assert.match(workbench, /群内结算基准/);
   assert.match(workbench, /下注人[\s\S]*项目[\s\S]*赔率/);
   assert.match(workbench, /不含加时与点球/);
-  assert.match(workbench, /等待对阵与赔率/);
+  assert.match(workbench, /未开赛 · 等待对阵/);
+  assert.match(workbench, /未开赛 · 对阵已定/);
+  assert.match(workbench, /if \(mode === "completed"\) return "完赛"/);
   assert.match(workbench, /LIVE_SYNC_INTERVAL_MS = 180_000/);
   assert.match(workbench, /fixtureInLiveSyncWindow/);
   assert.match(podium, /本场中奖榜领奖台/);
@@ -78,6 +80,12 @@ test("initial ledger load is not blocked by result synchronization", async () =>
   assert.ok(resultSync > firstLedgerLoad, "result synchronization must start after the first ledger load");
   assert.ok(refreshedLedger > resultSync, "successful synchronization should refresh the ledger once");
   assert.doesNotMatch(initialFlow, /\.then\(\(\) => fetch\("\/api\/state"/);
+  assert.match(workbench, /if \(!ledgerReady\)[\s\S]*?正在读取本地比赛账本/);
+  assert.ok(
+    workbench.indexOf("if (!ledgerReady)") <
+      workbench.indexOf('if (!selectedFixture) return <div className="wb-empty-page">'),
+    "seed fixtures must not flash before the persisted ledger arrives",
+  );
 });
 
 test("fixture snapping and static provider widgets keep their reuse invariants", async () => {
@@ -110,6 +118,45 @@ test("fixture snapping and static provider widgets keep their reuse invariants",
     /controller\.abort\(\);\s*host\?\.replaceChildren\(\);/,
     "dependency cleanup should not detach a reusable static widget",
   );
+});
+
+test("completed fixtures keep local history while the provider widget stays on the next fixture", async () => {
+  const [workbench, css, stateRoute, syncRoute, schema, progression] = await Promise.all([
+    readFile(new URL("../app/components/PoolWorkbench.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/state/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/results/sync/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/fixture-progression.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.equal(
+    [...workbench.matchAll(/<ApiSportsGameWidget/g)].length,
+    1,
+    "the provider widget should have one retained instance",
+  );
+  assert.match(workbench, /ledgerReady && nextFixture &&/);
+  assert.match(workbench, /selectedFixture\.id === nextFixture\.id/);
+  assert.match(workbench, /hidden=\{!showNextWidget\}/);
+  assert.match(workbench, /fixtureId=\{[\s\S]*?nextFixture\.providerMatchId/);
+  assert.match(workbench, /!showNextWidget && \([\s\S]*?<LocalMatchCard fixture=\{selectedFixture\}/);
+  assert.match(workbench, /data-presentation=\{mode\}/);
+  assert.match(workbench, /fixture\.recordStatus === "settled" \? "已结算" : "已锁定"/);
+  assert.match(workbench, /fixture\.recordStatus === "settled" && \([\s\S]*?betSettlementLabel\(bet\)/);
+  assert.match(workbench, /selectedFixture\.recordStatus === "settled"[\s\S]*?<PoolPodium/);
+  assert.match(css, /\.wb-card-body\s*\{[\s\S]*?overflow-y:\s*auto/);
+  assert.doesNotMatch(
+    css,
+    /\.wb-fixture-card\.is-readonly[^}]*pointer-events:\s*none/,
+    "read-only cards must remain scrollable",
+  );
+
+  assert.match(schema, /winnerSide:\s*text\("winner_side"\)/);
+  assert.match(stateRoute, /transaction\(async \(tx\)[\s\S]*?winnerSide:\s*currentPlan\.winnerSide/);
+  assert.match(syncRoute, /transaction\(async \(tx\)[\s\S]*?winnerSide:\s*currentPlan\.winnerSide/);
+  assert.match(syncRoute, /await persistProgression\(db, fixture\.id, winnerSide, now\)/);
+  assert.match(syncRoute, /fixture\.winnerSide === null/);
+  assert.match(progression, /M101[\s\S]*M102[\s\S]*M103[\s\S]*M104/);
 });
 
 test("pool totals expose an accessible per-person contribution sheet", async () => {

@@ -1,4 +1,4 @@
-export const APP_STATE_VERSION = 3 as const;
+export const APP_STATE_VERSION = 4 as const;
 export const STAKE_CENTS = 1_000;
 export const MAX_BETS_PER_PARTICIPANT = 3;
 export const LOCK_MINUTES_BEFORE_KICKOFF = 120;
@@ -28,6 +28,8 @@ export interface Team {
   englishName: string;
   placeholder?: boolean;
 }
+
+export type KnockoutWinnerSide = "home" | "away";
 
 export type FixtureRecordStatus =
   | "scheduled"
@@ -108,8 +110,8 @@ export interface ApiFootballFixturePayload {
     round?: unknown;
   } | null;
   teams?: {
-    home?: { id?: unknown; name?: unknown } | null;
-    away?: { id?: unknown; name?: unknown } | null;
+    home?: { id?: unknown; name?: unknown; winner?: unknown } | null;
+    away?: { id?: unknown; name?: unknown; winner?: unknown } | null;
   } | null;
   goals?: { home?: unknown; away?: unknown } | null;
   score?: {
@@ -124,8 +126,26 @@ export interface NormalizedApiFootballResult {
   providerStatus: string;
   halfTime: RegulationScore | null;
   regularTime: RegulationScore | null;
+  winnerSide: KnockoutWinnerSide | null;
   outcome: "ready" | "waiting" | "manual_review";
   message: string;
+}
+
+export function winnerSideFromRegulationScore(
+  score: RegulationScore,
+): KnockoutWinnerSide | null {
+  if (score.home > score.away) return "home";
+  if (score.away > score.home) return "away";
+  return null;
+}
+
+function apiFootballWinnerSide(
+  match: ApiFootballFixturePayload,
+): KnockoutWinnerSide | null {
+  const homeWon = match.teams?.home?.winner === true;
+  const awayWon = match.teams?.away?.winner === true;
+  if (homeWon === awayWon) return null;
+  return homeWon ? "home" : "away";
 }
 
 // ET/BT/P mean regulation time is already complete even though extra time or
@@ -136,6 +156,15 @@ const REGULATION_COMPLETE_API_FOOTBALL_STATUSES = new Set([
   "ET",
   "BT",
   "P",
+  "AET",
+  "PEN",
+]);
+
+// ET/BT/P are live phases: the 90-minute score is frozen, but an extra-time
+// lead or an in-progress shootout must never become the persisted knockout
+// winner. Only terminal provider states may advance the bracket.
+const KNOCKOUT_WINNER_COMPLETE_API_FOOTBALL_STATUSES = new Set([
+  "FT",
   "AET",
   "PEN",
 ]);
@@ -170,6 +199,7 @@ export function normalizeApiFootballFixture(
       providerStatus,
       halfTime,
       regularTime: null,
+      winnerSide: null,
       outcome: "waiting",
       message: halfTime
         ? "已记录半场比分；API-Football 尚未明确标记比赛结束，暂不结算。"
@@ -184,6 +214,7 @@ export function normalizeApiFootballFixture(
       providerStatus,
       halfTime,
       regularTime: null,
+      winnerSide: null,
       outcome: "waiting",
       message: "常规时间已经结束，正在等待 API-Football 发布90分钟比分。",
     };
@@ -197,18 +228,43 @@ export function normalizeApiFootballFixture(
       providerStatus,
       halfTime: null,
       regularTime: null,
+      winnerSide: null,
       outcome: "manual_review",
       message: `API-Football 的90分钟比分未通过校验：${scoreError} 禁止用 goals、加时或点球比分替代。`,
     };
   }
 
+  const regularTime = {
+    home: fulltime!.home as number,
+    away: fulltime!.away as number,
+  };
+  const scoreWinnerSide = winnerSideFromRegulationScore(regularTime);
+  const providerWinnerSide = KNOCKOUT_WINNER_COMPLETE_API_FOOTBALL_STATUSES.has(
+    providerStatus,
+  )
+    ? apiFootballWinnerSide(match)
+    : null;
+  if (
+    providerWinnerSide &&
+    scoreWinnerSide &&
+    providerWinnerSide !== scoreWinnerSide
+  ) {
+    return {
+      providerStatus,
+      halfTime,
+      regularTime,
+      winnerSide: null,
+      outcome: "manual_review",
+      message: "API-Football 的实际胜方与90分钟非平局比分冲突，需要人工复核。",
+    };
+  }
   return {
     providerStatus,
     halfTime,
-    regularTime: {
-      home: fulltime!.home as number,
-      away: fulltime!.away as number,
-    },
+    regularTime,
+    winnerSide: KNOCKOUT_WINNER_COMPLETE_API_FOOTBALL_STATUSES.has(providerStatus)
+      ? providerWinnerSide ?? scoreWinnerSide
+      : null,
     outcome: "ready",
     message: "已取得90分钟常规时间及伤停补时比分。",
   };
@@ -326,6 +382,7 @@ export interface Fixture {
   lockAt: string;
   resultSyncDueAt: string;
   providerMatchId: string | null;
+  winnerSide: KnockoutWinnerSide | null;
   recordStatus: FixtureRecordStatus;
   status: FixtureStatus;
   isBettingOpen: boolean;
@@ -372,6 +429,7 @@ export interface AppState {
   version: typeof APP_STATE_VERSION;
   serverTime: string;
   activeFixtureId: string | null;
+  nextFixtureId: string | null;
   participants: Participant[];
   fixtures: Fixture[];
   entries: FixtureEntry[];
@@ -438,6 +496,7 @@ export interface ManualResultRequest {
   halfAway?: number;
   regulationHome: number;
   regulationAway: number;
+  winnerSide?: KnockoutWinnerSide;
   reason: string;
 }
 
@@ -469,6 +528,7 @@ type SeedFixture = Omit<
   | "resultSource"
   | "resultBasis"
   | "reviewNote"
+  | "winnerSide"
 >;
 
 export const FIXTURES: readonly SeedFixture[] = [
@@ -586,12 +646,15 @@ export function isFixtureBettingWindowOpen(
 export function deriveFixtureStates(
   fixtures: Fixture[],
   now = new Date().toISOString()
-): { fixtures: Fixture[]; activeFixtureId: string | null } {
+): { fixtures: Fixture[]; activeFixtureId: string | null; nextFixtureId: string | null } {
   const nowMs = validTime(now);
   // The pool advances serially. A later fixture stays locked until every
   // earlier fixture is settled, even if its own kickoff is still in the future.
   const nextNotStarted = [...fixtures]
-    .filter((fixture) => fixture.recordStatus !== "settled")
+    .filter(
+      (fixture) =>
+        fixture.recordStatus !== "settled" || fixture.winnerSide === null,
+    )
     .sort((a, b) => a.sequence - b.sequence)[0];
   const nextFixtureIsConfigured = Boolean(
     nextNotStarted &&
@@ -609,6 +672,7 @@ export function deriveFixtureStates(
 
   return {
     activeFixtureId,
+    nextFixtureId: nextNotStarted?.id ?? null,
     fixtures: fixtures.map((fixture): Fixture => {
       let status: FixtureStatus;
       if (fixture.recordStatus === "settled") {
@@ -646,6 +710,7 @@ export function createSeedState(now = new Date().toISOString()): AppState {
     resultSource: null,
     resultBasis: null,
     reviewNote: null,
+    winnerSide: null,
     offers: [],
     settlement: null,
   }));
@@ -655,6 +720,7 @@ export function createSeedState(now = new Date().toISOString()): AppState {
     version: APP_STATE_VERSION,
     serverTime: now,
     activeFixtureId: derived.activeFixtureId,
+    nextFixtureId: derived.nextFixtureId,
     participants: PARTICIPANTS.map((participant) => ({ ...participant })),
     fixtures: derived.fixtures,
     entries: [],

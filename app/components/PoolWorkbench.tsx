@@ -87,15 +87,26 @@ function fixtureInLiveSyncWindow(state: AppState, nowMs: number): Fixture | null
       .sort((a, b) => a.sequence - b.sequence)
       .find(
         (fixture) =>
-          fixture.recordStatus === "scheduled" &&
           nowMs >= Date.parse(fixture.kickoffAt) &&
-          nowMs <= Date.parse(fixture.resultSyncDueAt),
+          nowMs <= Date.parse(fixture.resultSyncDueAt) &&
+          (fixture.recordStatus === "scheduled" ||
+            (fixture.recordStatus === "settled" &&
+              fixture.stage === "semi_final" &&
+              fixture.winnerSide === null)),
       ) ?? null
   );
 }
 
 function money(cents: number): string {
   return `¥${(cents / 100).toFixed(cents % 100 === 0 ? 0 : 2)}`;
+}
+
+function betSettlementLabel(bet: Bet): string {
+  if (bet.status === "won") return `中 · ${money(bet.payoutCents)}`;
+  if (bet.status === "lost") return "未中";
+  if (bet.status === "void") return `退 ${money(bet.payoutCents)}`;
+  if (bet.status === "review_required") return "待复核";
+  return "待结算";
 }
 
 function shanghaiDateTime(iso: string): string {
@@ -132,31 +143,73 @@ function responseError(response: Response): Promise<string> {
     .catch(() => `请求失败（${response.status}）`);
 }
 
-function statusLabel(fixture: Fixture, activeFixtureId: string | null): string {
-  if (fixture.recordStatus === "settled") return "已结算";
+type FixturePresentationMode =
+  | "next"
+  | "upcoming-confirmed"
+  | "upcoming-tbd"
+  | "completed";
+
+function fixturePresentationMode(
+  fixture: Fixture,
+  nextFixtureId: string | null,
+): FixturePresentationMode {
+  if (fixture.recordStatus === "settled" && fixture.winnerSide) return "completed";
+  if (fixture.id === nextFixtureId) return "next";
+  return fixture.homeTeam.placeholder || fixture.awayTeam.placeholder
+    ? "upcoming-tbd"
+    : "upcoming-confirmed";
+}
+
+function statusLabel(
+  fixture: Fixture,
+  activeFixtureId: string | null,
+  nextFixtureId: string | null,
+): string {
+  const mode = fixturePresentationMode(fixture, nextFixtureId);
+  if (mode === "completed") return "完赛";
   if (fixture.recordStatus === "review_required") return "待复核";
-  if (fixture.homeTeam.placeholder || fixture.awayTeam.placeholder) return "等待对阵与赔率";
-  if (fixture.offers.length === 0 && fixture.status === "locked") return "等待赔率";
+  if (fixture.recordStatus === "settled" && !fixture.winnerSide) {
+    return "等待最终赛果";
+  }
+  if (mode === "upcoming-tbd") return "未开赛 · 等待对阵";
+  if (mode === "upcoming-confirmed") return "未开赛 · 对阵已定";
+  if (fixture.homeTeam.placeholder || fixture.awayTeam.placeholder) return "下一场 · 等待对阵";
+  if (fixture.offers.length === 0 && fixture.status === "locked") return "下一场 · 等待赔率";
   if (fixture.id === activeFixtureId) return "开放下注";
   if (fixture.status === "in_progress") return "比赛进行中";
   if (fixture.status === "awaiting_result") return "等待赛果";
-  return "只读锁定";
+  return "下一场 · 已锁定";
 }
 
-function lockedCardCopy(fixture: Fixture): { title: string; body: string } {
-  if (fixture.recordStatus === "settled") {
+function lockedCardCopy(
+  fixture: Fixture,
+  mode: FixturePresentationMode,
+): { title: string; body: string } {
+  if (mode === "completed") {
     return { title: "本场无人参与", body: "本场没有锁定注单。" };
   }
-  if (fixture.homeTeam.placeholder || fixture.awayTeam.placeholder) {
+  if (fixture.recordStatus === "settled" && !fixture.winnerSide) {
     return {
-      title: "等待对阵与赔率",
-      body: "前两场结束后更新球队；收到赔率图后开放。",
+      title: "90分钟已结算",
+      body: "等待加时或点球后的最终胜者；本场注单保持可见。",
+    };
+  }
+  if (mode === "upcoming-tbd" || fixture.homeTeam.placeholder || fixture.awayTeam.placeholder) {
+    return {
+      title: "未开赛 · 等待对阵",
+      body: "前场赛果确认后自动写入球队，轮到本场时再开放。",
+    };
+  }
+  if (mode === "upcoming-confirmed") {
+    return {
+      title: "未开赛 · 对阵已确认",
+      body: "当前只可查看；前一场结算后才轮到本场开放。",
     };
   }
   if (fixture.offers.length === 0) {
     return { title: "等待赔率", body: "对阵已确认，收到本场赔率图后开放。" };
   }
-  return { title: "本场暂不可操作", body: "只有顺序中的下一场比赛开放下注。" };
+  return { title: "本场已经锁定", body: "下注历史保持可见，当前不能再修改。" };
 }
 
 function Flag({ code, label }: { code: string; label: string }) {
@@ -168,6 +221,51 @@ function Flag({ code, label }: { code: string; label: string }) {
       role="img"
       aria-label={`${label}国旗`}
     />
+  );
+}
+
+function LocalMatchCard({
+  fixture,
+  mode,
+}: {
+  fixture: Fixture;
+  mode: FixturePresentationMode;
+}) {
+  const result = fixture.regularTimeScore;
+  const winner = fixture.winnerSide
+    ? fixture.winnerSide === "home"
+      ? fixture.homeTeam
+      : fixture.awayTeam
+    : null;
+  const scoreNote = result
+    ? result.home === result.away && winner
+      ? `90分钟平局 · ${winner.name}晋级`
+      : result.home === result.away
+        ? "90分钟已结算 · 等待最终胜者"
+        : "90分钟比分 · 本地记录"
+    : mode === "upcoming-tbd"
+      ? "等待前场赛果确定对阵"
+      : mode === "upcoming-confirmed"
+        ? "对阵已确认 · 尚未开赛"
+        : fixture.status === "in_progress"
+          ? "比赛进行中 · 等待本地赛果"
+          : "比分待赛后锁定";
+
+  return (
+    <div className="wb-matchup" data-local-result={mode === "completed" || undefined}>
+      <div className="wb-team wb-team-home">
+        <Flag code={fixture.homeTeam.code} label={fixture.homeTeam.name} />
+        <b>{fixture.homeTeam.name}</b>
+      </div>
+      <div className="wb-score">
+        <strong>{result ? `${result.home} : ${result.away}` : "— : —"}</strong>
+        <span>{scoreNote}</span>
+      </div>
+      <div className="wb-team wb-team-away">
+        <Flag code={fixture.awayTeam.code} label={fixture.awayTeam.name} />
+        <b>{fixture.awayTeam.name}</b>
+      </div>
+    </div>
   );
 }
 
@@ -342,6 +440,7 @@ export function PoolWorkbench() {
   const [adminPinError, setAdminPinError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [ledgerReady, setLedgerReady] = useState(false);
   const [lockClock, setLockClock] = useState(() => Date.now());
   const [stateReceivedAt, setStateReceivedAt] = useState(() => Date.now());
   const [oddsJson, setOddsJson] = useState('{\n  "source": "手动导入",\n  "offers": []\n}');
@@ -349,10 +448,12 @@ export function PoolWorkbench() {
   const [halfAway, setHalfAway] = useState("");
   const [fullHome, setFullHome] = useState("");
   const [fullAway, setFullAway] = useState("");
+  const [manualWinnerSide, setManualWinnerSide] = useState<"" | "home" | "away">("");
   const trackRef = useRef<HTMLDivElement | null>(null);
   const didInitialScroll = useRef(false);
   const scrollFrame = useRef<number | null>(null);
   const scrollSettleTimer = useRef<number | null>(null);
+  const requestedScrollFixtureId = useRef<string | null>(null);
   const stateRef = useRef(state);
   const syncInFlightRef = useRef(false);
   const lastResultSyncAtRef = useRef(0);
@@ -361,7 +462,8 @@ export function PoolWorkbench() {
   const editingRevisionsRef = useRef<Partial<Record<ParticipantId, number>>>({});
 
   const fixtures = useMemo(() => [...state.fixtures].sort((a, b) => a.sequence - b.sequence), [state.fixtures]);
-  const selectedFixture = fixtures.find((fixture) => fixture.id === selectedFixtureId) ?? fixtures[0] ?? null;
+  const nextFixture = fixtures.find((fixture) => fixture.id === state.nextFixtureId) ?? null;
+  const selectedFixture = fixtures.find((fixture) => fixture.id === selectedFixtureId) ?? nextFixture ?? fixtures[0] ?? null;
   const estimatedServerNowMs = Date.parse(state.serverTime) + Math.max(
     0,
     lockClock - stateReceivedAt,
@@ -456,6 +558,7 @@ export function PoolWorkbench() {
   const pickerGroups = useMemo(() => groupedOffers(pickerFixture?.offers ?? []), [pickerFixture]);
 
   const applyState = useCallback((next: AppState) => {
+    const previousNextFixtureId = stateRef.current.nextFixtureId;
     const editableEntries = next.entries.filter((entry) => entry.canEdit);
     const editableByParticipant = new Map(
       editableEntries.map((entry) => [entry.participantId, entry]),
@@ -485,8 +588,23 @@ export function PoolWorkbench() {
     }
 
     const receivedAt = Date.now();
+    setSelectedFixtureId((current) => {
+      const fallback = next.nextFixtureId ?? next.fixtures.at(-1)?.id ?? null;
+      const target =
+        current === null
+          ? fallback
+          : previousNextFixtureId &&
+              current === previousNextFixtureId &&
+              previousNextFixtureId !== next.nextFixtureId &&
+              next.nextFixtureId
+            ? next.nextFixtureId
+            : current;
+      if (target && target !== current) requestedScrollFixtureId.current = target;
+      return target;
+    });
     stateRef.current = next;
     setState(next);
+    setLedgerReady(true);
     setStateReceivedAt(receivedAt);
     if (Object.keys(draftUpdates).length > 0) {
       setDrafts((current) => ({ ...current, ...draftUpdates }));
@@ -499,7 +617,6 @@ export function PoolWorkbench() {
     const next = unwrapState(await response.json());
     if (signal?.aborted) return next;
     applyState(next);
-    setSelectedFixtureId((current) => current ?? next.activeFixtureId ?? next.fixtures[0]?.id ?? null);
     return next;
   }, [applyState]);
 
@@ -641,11 +758,16 @@ export function PoolWorkbench() {
   }, [sheet]);
 
   useEffect(() => {
-    if (!selectedFixtureId || didInitialScroll.current) return;
+    if (!selectedFixtureId) return;
+    if (
+      didInitialScroll.current &&
+      requestedScrollFixtureId.current !== selectedFixtureId
+    ) return;
     const track = trackRef.current;
     const element = trackRef.current?.querySelector<HTMLElement>(`[data-fixture-id="${selectedFixtureId}"]`);
     if (!track || !element) return;
     didInitialScroll.current = true;
+    requestedScrollFixtureId.current = null;
     const trackBox = track.getBoundingClientRect();
     const cardBox = element.getBoundingClientRect();
     track.scrollBy({
@@ -900,6 +1022,10 @@ export function PoolWorkbench() {
       setError("半场比分需要同时填写两个整数。");
       return;
     }
+    if (regulationHome === regulationAway && !manualWinnerSide) {
+      setError("90分钟战平时，请选择加时或点球后的实际晋级方。");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -913,11 +1039,18 @@ export function PoolWorkbench() {
           halfAway: hasHalf ? Number(halfAway) : undefined,
           regulationHome,
           regulationAway,
+          winnerSide:
+            regulationHome === regulationAway
+              ? manualWinnerSide || undefined
+              : regulationHome > regulationAway
+                ? "home"
+                : "away",
           reason: "管理员核对数据源后录入",
         }),
       });
       await assertAdminResponse(response);
       applyState(unwrapState(await response.json()));
+      setManualWinnerSide("");
       setToast("90分钟赛果已锁定并完成结算");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "赛果保存失败");
@@ -959,12 +1092,52 @@ export function PoolWorkbench() {
     }
   }
 
+  if (!ledgerReady) {
+    return (
+      <div className="wb-app wb-app-loading" aria-busy={!error}>
+        <header className="wb-topbar">
+          <div className="wb-brand"><span>球局</span><small>世界杯奖池</small></div>
+          <span className="wb-loading-status">{error ? "读取失败" : "读取账本"}</span>
+        </header>
+        <main className="wb-ledger-loading-main">
+          <div className="wb-ledger-loading-card" role="status" aria-live="polite">
+            <span className="wb-ledger-loading-mark" aria-hidden="true">球</span>
+            <b>{error ? "本地账本暂时无法读取" : "正在读取本地比赛账本"}</b>
+            <p>{error ?? "赛果、下注历史和下一场状态会一起出现。"}</p>
+            {error && (
+              <button
+                type="button"
+                onClick={() => {
+                  setError(null);
+                  void refreshState().catch((reason: unknown) => {
+                    setError(reason instanceof Error ? reason.message : "本地账本暂时无法读取");
+                  });
+                }}
+              >
+                重新读取
+              </button>
+            )}
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   if (!selectedFixture) return <div className="wb-empty-page">暂无比赛</div>;
 
+  const selectedMode = fixturePresentationMode(selectedFixture, state.nextFixtureId);
+  const showNextWidget = Boolean(
+    ledgerReady && nextFixture && selectedFixture.id === nextFixture.id,
+  );
   const result = selectedFixture.regularTimeScore;
+  const advancingTeam = selectedFixture.winnerSide
+    ? selectedFixture.winnerSide === "home"
+      ? selectedFixture.homeTeam
+      : selectedFixture.awayTeam
+    : null;
   const resultOutcome = result ? (result.home > result.away ? `${selectedFixture.homeTeam.name}胜` : result.home < result.away ? `${selectedFixture.awayTeam.name}胜` : "平局") : "";
   const tickerText = result
-    ? `90分钟赛果 · ${result.home}:${result.away} · ${resultOutcome} · 总进球 ${result.home + result.away} · 不含加时与点球`
+    ? `90分钟赛果 · ${result.home}:${result.away} · ${resultOutcome}${result.home === result.away && advancingTeam ? ` · ${advancingTeam.name}晋级` : ""} · 总进球 ${result.home + result.away} · 不含加时与点球`
     : "";
 
   return (
@@ -990,25 +1163,32 @@ export function PoolWorkbench() {
             <span>{selectedFixture.matchCode} · {STAGE_LABEL[selectedFixture.stage]}</span>
             <strong>{shanghaiDateTime(selectedFixture.kickoffAt)} 北京时间</strong>
             <span className="wb-status" data-status={selectedFixture.id === locallyActiveFixtureId ? "active" : selectedFixture.status === "active" ? "locked" : selectedFixture.status}>
-              {statusLabel(selectedFixture, locallyActiveFixtureId)}
+              {statusLabel(selectedFixture, locallyActiveFixtureId, state.nextFixtureId)}
             </span>
           </div>
-          <ApiSportsGameWidget
-            fixtureId={selectedFixture.providerMatchId}
-            kickoffAt={selectedFixture.kickoffAt}
-            currentTime={state.serverTime}
-            settled={selectedFixture.recordStatus === "settled"}
-            fallback={(
-              <div className="wb-matchup" id="wb-match-title">
-                <div className="wb-team wb-team-home"><Flag code={selectedFixture.homeTeam.code} label={selectedFixture.homeTeam.name} /><b>{selectedFixture.homeTeam.name}</b></div>
-                <div className="wb-score">
-                  <strong>{result ? `${result.home} : ${result.away}` : "— : —"}</strong>
-                  <span>{result ? "90分钟比分" : "比分待赛后锁定"}</span>
-                </div>
-                <div className="wb-team wb-team-away"><Flag code={selectedFixture.awayTeam.code} label={selectedFixture.awayTeam.name} /><b>{selectedFixture.awayTeam.name}</b></div>
-              </div>
-            )}
-          />
+          {ledgerReady && nextFixture && (
+            <div className="wb-next-widget-slot" hidden={!showNextWidget}>
+              <ApiSportsGameWidget
+                fixtureId={
+                  nextFixture.homeTeam.placeholder || nextFixture.awayTeam.placeholder
+                    ? null
+                    : nextFixture.providerMatchId
+                }
+                kickoffAt={nextFixture.kickoffAt}
+                currentTime={state.serverTime}
+                settled={false}
+                fallback={(
+                  <LocalMatchCard
+                    fixture={nextFixture}
+                    mode={fixturePresentationMode(nextFixture, state.nextFixtureId)}
+                  />
+                )}
+              />
+            </div>
+          )}
+          {!showNextWidget && (
+            <LocalMatchCard fixture={selectedFixture} mode={selectedMode} />
+          )}
           <div
             className="wb-frozen-score"
             data-frozen={Boolean(result)}
@@ -1084,17 +1264,19 @@ export function PoolWorkbench() {
               const bets = state.bets.filter((bet) => bet.fixtureId === fixture.id);
               const active = fixture.id === locallyActiveFixtureId;
               const selected = fixture.id === selectedFixture.id;
-              const emptyCopy = lockedCardCopy(fixture);
+              const mode = fixturePresentationMode(fixture, state.nextFixtureId);
+              const emptyCopy = lockedCardCopy(fixture, mode);
               return (
                 <article
-                  className={`wb-fixture-card${selected ? " is-selected" : ""}${active ? " is-active" : " is-readonly"}`}
+                  className={`wb-fixture-card${selected ? " is-selected" : ""}${active ? " is-active" : " is-readonly"}${mode === "completed" ? " is-completed" : ""}${mode.startsWith("upcoming") ? " is-upcoming" : ""}`}
                   key={fixture.id}
                   data-fixture-id={fixture.id}
+                  data-presentation={mode}
                   onFocus={() => setSelectedFixtureId(fixture.id)}
                 >
                   <header className="wb-card-head">
                     <div><b>{fixture.homeTeam.name} vs {fixture.awayTeam.name}</b><span>{shanghaiDateTime(fixture.kickoffAt)} · {STAGE_LABEL[fixture.stage]}</span></div>
-                    <span className="wb-card-lock">{active ? `${shanghaiTime(fixture.lockAt)} 锁定` : statusLabel(fixture, locallyActiveFixtureId)}</span>
+                    <span className="wb-card-lock">{active ? `${shanghaiTime(fixture.lockAt)} 锁定` : statusLabel(fixture, locallyActiveFixtureId, state.nextFixtureId)}</span>
                   </header>
                   <div className="wb-card-body">
                     {(entries.length > 0 || (active && activeDraftPeople.length > 0)) && (
@@ -1114,7 +1296,7 @@ export function PoolWorkbench() {
                             />
                             <span>
                               <b>{participant?.name ?? entry.participantId}</b>
-                              <small>{entry.betCount}注 · 已锁定</small>
+                              <small>{entry.betCount}注 · {fixture.recordStatus === "settled" ? "已结算" : "已锁定"}</small>
                             </span>
                           </div>
                           <div className="wb-entry-bets">
@@ -1124,7 +1306,12 @@ export function PoolWorkbench() {
                                   <b>{bet.label}</b>
                                   <small>{MARKET_LABEL[offerGroup(bet.marketType)] ?? bet.marketType}</small>
                                 </span>
-                                <strong>{bet.odds.toFixed(2)}</strong>
+                                <span className="wb-entry-bet-result">
+                                  <strong>{bet.odds.toFixed(2)}</strong>
+                                  {fixture.recordStatus === "settled" && (
+                                    <small data-status={bet.status}>{betSettlementLabel(bet)}</small>
+                                  )}
+                                </span>
                               </div>
                             ))}
                           </div>
@@ -1181,7 +1368,7 @@ export function PoolWorkbench() {
                       </button>
                     )}
                     {!active && entries.length === 0 && (
-                      <div className="wb-card-empty"><span>锁</span><b>{emptyCopy.title}</b><p>{emptyCopy.body}</p></div>
+                      <div className="wb-card-empty"><span>{mode === "completed" ? "终" : "锁"}</span><b>{emptyCopy.title}</b><p>{emptyCopy.body}</p></div>
                     )}
                   </div>
                 </article>
@@ -1392,7 +1579,30 @@ export function PoolWorkbench() {
             </section>
             <section className="wb-admin-section"><div><h3>赛果同步</h3><p>到达预设抓取时间后检查已配置数据源；数据源可随时替换。</p></div><button type="button" disabled={busy} onClick={() => void syncResults()}>立即检查</button></section>
             <section className="wb-admin-form"><h3>导入赔率 JSON</h3><textarea aria-label="赔率 JSON" value={oddsJson} onChange={(event) => setOddsJson(event.target.value)} spellCheck={false} /><button type="button" disabled={busy} onClick={() => void importOdds()}>导入到当前比赛</button></section>
-            <section className="wb-admin-form"><h3>人工复核比分</h3><p>半场比分用于半全场玩法；结算比分始终只填90分钟＋伤停补时。</p><div className="wb-score-inputs"><label>半场主队<input inputMode="numeric" value={halfHome} onChange={(event) => setHalfHome(event.target.value)} placeholder="可空" /></label><label>半场客队<input inputMode="numeric" value={halfAway} onChange={(event) => setHalfAway(event.target.value)} placeholder="可空" /></label><label>90′主队<input inputMode="numeric" value={fullHome} onChange={(event) => setFullHome(event.target.value)} placeholder="0" /></label><label>90′客队<input inputMode="numeric" value={fullAway} onChange={(event) => setFullAway(event.target.value)} placeholder="0" /></label></div><button type="button" disabled={busy} onClick={() => void saveManualResult()}>复核并锁定赛果</button></section>
+            <section className="wb-admin-form">
+              <h3>人工复核比分</h3>
+              <p>半场比分用于半全场玩法；结算比分始终只填90分钟＋伤停补时。</p>
+              <div className="wb-score-inputs">
+                <label>半场主队<input inputMode="numeric" value={halfHome} onChange={(event) => setHalfHome(event.target.value)} placeholder="可空" /></label>
+                <label>半场客队<input inputMode="numeric" value={halfAway} onChange={(event) => setHalfAway(event.target.value)} placeholder="可空" /></label>
+                <label>90′主队<input inputMode="numeric" value={fullHome} onChange={(event) => setFullHome(event.target.value)} placeholder="0" /></label>
+                <label>90′客队<input inputMode="numeric" value={fullAway} onChange={(event) => setFullAway(event.target.value)} placeholder="0" /></label>
+              </div>
+              {fullHome !== "" && fullAway !== "" && Number(fullHome) === Number(fullAway) && (
+                <label className="wb-winner-select">
+                  加时或点球后的实际晋级方
+                  <select
+                    value={manualWinnerSide}
+                    onChange={(event) => setManualWinnerSide(event.target.value as "" | "home" | "away")}
+                  >
+                    <option value="">请选择</option>
+                    <option value="home">{selectedFixture.homeTeam.name}</option>
+                    <option value="away">{selectedFixture.awayTeam.name}</option>
+                  </select>
+                </label>
+              )}
+              <button type="button" disabled={busy} onClick={() => void saveManualResult()}>复核并锁定赛果</button>
+            </section>
           </div>
         </DialogShell>
       )}

@@ -29,13 +29,20 @@ import {
   type FixtureEntry,
   type FixtureRecordStatus,
   type ManualResultRequest,
+  type KnockoutWinnerSide,
   type OddsOffer,
   type ParticipantId,
   type SetEntryEditUnlockedRequest,
   type Settlement,
   type StateMutationRequest,
   type UploadOddsRequest,
+  winnerSideFromRegulationScore,
 } from "@/lib/app-data";
+import {
+  fixtureTeamsAreResolved,
+  FixtureProgressionError,
+  planKnockoutProgression,
+} from "@/lib/fixture-progression";
 import { ALL_SEED_ODDS } from "@/lib/seed-odds";
 import { settlePool } from "@/lib/settlement";
 import { hasValidAdminSession } from "@/lib/admin-auth";
@@ -277,6 +284,10 @@ async function loadState(db: Database, now = new Date().toISOString()): Promise<
     lockAt: row.lockAt,
     resultSyncDueAt: row.resultSyncDueAt,
     providerMatchId: row.providerMatchId,
+    winnerSide:
+      row.winnerSide === "home" || row.winnerSide === "away"
+        ? row.winnerSide
+        : null,
     recordStatus: asRecordStatus(row.status),
     status: "locked",
     isBettingOpen: false,
@@ -336,6 +347,7 @@ async function loadState(db: Database, now = new Date().toISOString()): Promise<
     version: APP_STATE_VERSION,
     serverTime: now,
     activeFixtureId: derived.activeFixtureId,
+    nextFixtureId: derived.nextFixtureId,
     participants: participantRows
       .filter((row) => PARTICIPANTS.some((participant) => participant.id === row.id))
       .map((row) => ({
@@ -364,12 +376,16 @@ function activeFixtureForRows<
     lockAt: string;
     sequence: number;
     status: string;
+    winnerSide: string | null;
     homeTeamPlaceholder: boolean;
     awayTeamPlaceholder: boolean;
   }
 >(fixtureRows: T[], now: string): T | null {
   const next = [...fixtureRows]
-    .filter((fixture) => fixture.status !== "settled")
+    .filter(
+      (fixture) =>
+        fixture.status !== "settled" || fixture.winnerSide === null,
+    )
     .sort((a, b) => a.sequence - b.sequence)[0];
   return next &&
     next.status === "scheduled" &&
@@ -841,12 +857,83 @@ async function uploadOdds(db: Database, payload: UploadOddsRequest, now: string)
   }
 }
 
+async function persistProgression(
+  db: Database,
+  sourceFixtureId: string,
+  winnerSide: KnockoutWinnerSide,
+  now: string,
+) {
+  try {
+    await db.transaction(async (tx) => {
+      const fixtureRows = await tx
+        .select()
+        .from(fixtures)
+        .orderBy(asc(fixtures.sequence));
+      const currentPlan = planKnockoutProgression(
+        fixtureRows,
+        sourceFixtureId,
+        winnerSide,
+      );
+      const sourceUpdated = await tx
+        .update(fixtures)
+        .set({ winnerSide: currentPlan.winnerSide, updatedAt: now })
+        .where(eq(fixtures.id, currentPlan.sourceFixtureId))
+        .returning({ id: fixtures.id });
+      if (sourceUpdated.length !== 1) {
+        throw new FixtureProgressionError("比赛状态刚刚发生变化，请刷新后重试。");
+      }
+      for (const patch of currentPlan.teamPatches) {
+        const updated = patch.side === "home"
+          ? await tx
+              .update(fixtures)
+              .set({
+                homeTeamCode: patch.team.code,
+                homeTeamName: patch.team.name,
+                homeTeamEnglishName: patch.team.englishName,
+                homeTeamPlaceholder: false,
+                updatedAt: now,
+              })
+              .where(
+                and(
+                  eq(fixtures.id, patch.fixtureId),
+                  eq(fixtures.homeTeamPlaceholder, true),
+                ),
+              )
+              .returning({ id: fixtures.id })
+          : await tx
+              .update(fixtures)
+              .set({
+                awayTeamCode: patch.team.code,
+                awayTeamName: patch.team.name,
+                awayTeamEnglishName: patch.team.englishName,
+                awayTeamPlaceholder: false,
+                updatedAt: now,
+              })
+              .where(
+                and(
+                  eq(fixtures.id, patch.fixtureId),
+                  eq(fixtures.awayTeamPlaceholder, true),
+                ),
+              )
+              .returning({ id: fixtures.id });
+        if (updated.length !== 1) {
+          throw new FixtureProgressionError("淘汰赛对阵刚刚发生变化，请刷新后重试。");
+        }
+      }
+    });
+  } catch (error) {
+    if (error instanceof FixtureProgressionError) badRequest(error.message, 409);
+    throw error;
+  }
+}
+
 interface SettleInput {
   fixtureId: string;
   halfHome: number | null;
   halfAway: number | null;
   regularHome: number;
   regularAway: number;
+  winnerSide: KnockoutWinnerSide;
   source: "external-provider" | "api-football" | "football-data.org" | "manual";
   note: string;
   now: string;
@@ -864,6 +951,16 @@ function settlementMatchesInput(
   );
 }
 
+function settlementRegulationMatchesInput(
+  settlement: typeof settlements.$inferSelect,
+  input: SettleInput,
+): boolean {
+  return (
+    settlement.regularHome === input.regularHome &&
+    settlement.regularAway === input.regularAway
+  );
+}
+
 async function settleFixture(db: Database, input: SettleInput) {
   const fixtureRows = await db.select().from(fixtures).orderBy(asc(fixtures.sequence));
   const fixture = fixtureRows.find((row) => row.id === input.fixtureId);
@@ -874,12 +971,29 @@ async function settleFixture(db: Database, input: SettleInput) {
       .from(settlements)
       .where(eq(settlements.fixtureId, fixture.id))
       .limit(1);
-    if (existingSettlement && settlementMatchesInput(existingSettlement, input)) return;
+    if (
+      existingSettlement &&
+      settlementRegulationMatchesInput(existingSettlement, input)
+    ) {
+      await persistProgression(
+        db,
+        fixture.id,
+        input.winnerSide,
+        input.now,
+      );
+      return;
+    }
     badRequest("本场已经按另一份赛果结算，不能覆盖。", 409);
   }
 
+  if (!fixtureTeamsAreResolved(fixture)) {
+    badRequest("本场对阵尚未确认，不能录入或结算赛果。", 409);
+  }
+
   const blockingPrior = fixtureRows.find(
-    (row) => row.sequence < fixture.sequence && row.status !== "settled"
+    (row) =>
+      row.sequence < fixture.sequence &&
+      (row.status !== "settled" || row.winnerSide === null),
   );
   if (blockingPrior) {
     badRequest(`请先完成${blockingPrior.matchCode}的结算，避免后续注金倒灌前场奖池。`, 409);
@@ -1064,15 +1178,43 @@ async function settleFixture(db: Database, input: SettleInput) {
       badRequest("本场已经按另一份赛果结算，不能覆盖。", 409);
     }
   }
+  // Settlement and bracket advancement are deliberately separate. If the
+  // process stops between them, the settled fixture remains winner-less and is
+  // picked up by the next sync; this verified transaction is therefore safely
+  // retryable without ever rolling back a valid 90-minute pool settlement.
+  await persistProgression(db, fixture.id, input.winnerSide, input.now);
 }
 
 async function manualResult(db: Database, payload: ManualResultRequest, now: string) {
   const hasHalf = payload.halfHome !== undefined || payload.halfAway !== undefined;
+  const regularTimeScore = {
+    home: payload.regulationHome,
+    away: payload.regulationAway,
+  };
   const scoreError = matchScoreValidationError(
-    { home: payload.regulationHome, away: payload.regulationAway },
+    regularTimeScore,
     hasHalf ? { home: payload.halfHome, away: payload.halfAway } : null,
   );
   if (scoreError) badRequest(scoreError, 400);
+  if (
+    payload.winnerSide !== undefined &&
+    payload.winnerSide !== "home" &&
+    payload.winnerSide !== "away"
+  ) {
+    badRequest("实际晋级方必须选择主队或客队。", 400);
+  }
+  const scoreWinnerSide = winnerSideFromRegulationScore(regularTimeScore);
+  if (
+    scoreWinnerSide &&
+    payload.winnerSide &&
+    payload.winnerSide !== scoreWinnerSide
+  ) {
+    badRequest("90分钟比分已有胜方，实际晋级方不能与比分冲突。", 400);
+  }
+  const winnerSide = scoreWinnerSide ?? payload.winnerSide;
+  if (!winnerSide) {
+    badRequest("90分钟战平时，请选择加时或点球后的实际晋级方。", 400);
+  }
   if (typeof payload.reason !== "string" || payload.reason.trim().length < 3) {
     badRequest("人工录入必须填写复核原因。", 400);
   }
@@ -1091,6 +1233,7 @@ async function manualResult(db: Database, payload: ManualResultRequest, now: str
     halfAway: hasHalf ? (payload.halfAway as number) : null,
     regularHome: payload.regulationHome,
     regularAway: payload.regulationAway,
+    winnerSide,
     source: "manual",
     note: `人工复核：${payload.reason.trim()}；仅按90分钟及伤停补时。`,
     now,

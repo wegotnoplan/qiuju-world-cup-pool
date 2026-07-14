@@ -8,8 +8,9 @@
   "scripts": {
     "dev": "npm run db:migrate && next dev",
     "build": "next build",
+    "vercel-build": "npm run db:migrate && next build",
     "start": "next start",
-    "test": "node --experimental-strip-types --test tests/settlement.test.mjs tests/odds-markets.test.mjs tests/admin-auth.test.mjs && npm run build && node --test tests/rendered-html.test.mjs",
+    "test": "node --experimental-strip-types --test tests/settlement.test.mjs tests/odds-markets.test.mjs tests/fixture-progression.test.mjs tests/admin-auth.test.mjs && npm run build && node --test tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "node --env-file-if-exists=.env.local scripts/migrate.mjs",

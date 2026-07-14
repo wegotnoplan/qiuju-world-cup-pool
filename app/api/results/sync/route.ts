@@ -12,6 +12,7 @@ import {
   gradeSelection,
   PARTICIPANTS,
   RESULT_BASIS,
+  type KnockoutWinnerSide,
   type RegulationScore,
 } from "@/lib/app-data";
 import {
@@ -23,6 +24,11 @@ import {
 } from "@/lib/api-football";
 import { settlePool } from "@/lib/settlement";
 import { hasValidAdminSession } from "@/lib/admin-auth";
+import {
+  fixtureTeamsAreResolved,
+  FixtureProgressionError,
+  planKnockoutProgression,
+} from "@/lib/fixture-progression";
 
 export const dynamic = "force-dynamic";
 
@@ -54,6 +60,7 @@ interface ProviderResult {
   providerStatus: string;
   halfTime: RegulationScore | null;
   regularTime: RegulationScore | null;
+  winnerSide: KnockoutWinnerSide | null;
   outcome: "ready" | "waiting" | "manual_review";
   message: string;
 }
@@ -80,6 +87,7 @@ class ApiFootballProvider implements ResultProvider {
           providerStatus: "MATCH_NOT_FOUND",
           halfTime: null,
           regularTime: null,
+          winnerSide: null,
           outcome: "waiting",
           message: "API-Football 暂未返回已绑定比赛，保持直播同步并稍后重试。",
         };
@@ -89,6 +97,7 @@ class ApiFootballProvider implements ResultProvider {
           providerStatus: "MATCH_NOT_FOUND",
           halfTime: null,
           regularTime: null,
+          winnerSide: null,
           outcome: "manual_review",
           message: "API-Football 没有返回唯一的已绑定比赛，需要人工复核比赛 ID。",
         };
@@ -100,6 +109,7 @@ class ApiFootballProvider implements ResultProvider {
           providerStatus: error.code,
           halfTime: null,
           regularTime: null,
+          winnerSide: null,
           outcome: "waiting",
           message: `${error.message} 本场保持待同步状态，可稍后重试。`,
         };
@@ -108,6 +118,7 @@ class ApiFootballProvider implements ResultProvider {
         providerStatus: "NETWORK_ERROR",
         halfTime: null,
         regularTime: null,
+        winnerSide: null,
         outcome: "waiting",
         message: "API-Football 暂时不可用，本场保持待同步状态。",
       };
@@ -292,17 +303,79 @@ interface SyncSettlementResult {
   theoreticalPayoutCents?: number;
 }
 
-function providerSettlementMatches(
+function providerSettlementRegulationMatches(
   settlement: typeof settlements.$inferSelect,
   score: RegulationScore,
-  halfTime: RegulationScore | null,
 ): boolean {
   return (
     settlement.regularHome === score.home &&
-    settlement.regularAway === score.away &&
-    settlement.halfHome === (halfTime?.home ?? null) &&
-    settlement.halfAway === (halfTime?.away ?? null)
+    settlement.regularAway === score.away
   );
+}
+
+async function persistProgression(
+  db: Database,
+  sourceFixtureId: string,
+  winnerSide: KnockoutWinnerSide,
+  now: string,
+) {
+  await db.transaction(async (tx) => {
+    const fixtureRows = await tx
+      .select()
+      .from(fixtures)
+      .orderBy(asc(fixtures.sequence));
+    const currentPlan = planKnockoutProgression(
+      fixtureRows,
+      sourceFixtureId,
+      winnerSide,
+    );
+    const sourceUpdated = await tx
+      .update(fixtures)
+      .set({ winnerSide: currentPlan.winnerSide, updatedAt: now })
+      .where(eq(fixtures.id, currentPlan.sourceFixtureId))
+      .returning({ id: fixtures.id });
+    if (sourceUpdated.length !== 1) {
+      throw new FixtureProgressionError("比赛状态刚刚发生变化，请刷新后重试。");
+    }
+    for (const patch of currentPlan.teamPatches) {
+      const updated = patch.side === "home"
+        ? await tx
+            .update(fixtures)
+            .set({
+              homeTeamCode: patch.team.code,
+              homeTeamName: patch.team.name,
+              homeTeamEnglishName: patch.team.englishName,
+              homeTeamPlaceholder: false,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(fixtures.id, patch.fixtureId),
+                eq(fixtures.homeTeamPlaceholder, true),
+              ),
+            )
+            .returning({ id: fixtures.id })
+        : await tx
+            .update(fixtures)
+            .set({
+              awayTeamCode: patch.team.code,
+              awayTeamName: patch.team.name,
+              awayTeamEnglishName: patch.team.englishName,
+              awayTeamPlaceholder: false,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(fixtures.id, patch.fixtureId),
+                eq(fixtures.awayTeamPlaceholder, true),
+              ),
+            )
+            .returning({ id: fixtures.id });
+      if (updated.length !== 1) {
+        throw new FixtureProgressionError("淘汰赛对阵刚刚发生变化，请刷新后重试。");
+      }
+    }
+  });
 }
 
 async function settleFromProvider(
@@ -310,6 +383,7 @@ async function settleFromProvider(
   fixtureId: string,
   score: RegulationScore,
   halfTime: RegulationScore | null,
+  winnerSide: KnockoutWinnerSide | null,
   providerStatus: string,
   now: string
 ): Promise<SyncSettlementResult> {
@@ -329,11 +403,24 @@ async function settleFromProvider(
       .limit(1);
     if (
       existingSettlement &&
-      providerSettlementMatches(existingSettlement, score, effectiveHalfTime)
+      providerSettlementRegulationMatches(existingSettlement, score)
     ) {
+      if (winnerSide) {
+        try {
+          await persistProgression(db, fixture.id, winnerSide, now);
+        } catch (error) {
+          if (!(error instanceof FixtureProgressionError)) throw error;
+          return { outcome: "manual_review", message: error.message, score };
+        }
+      }
+      const bracketPending =
+        !fixture.winnerSide &&
+        !winnerSide;
       return {
         outcome: "settled",
-        message: "本场此前已经按相同赛果结算。",
+        message: bracketPending
+          ? "90分钟奖池已结算，继续等待加时或点球后的实际晋级方。"
+          : "本场此前已经按相同赛果结算。",
         score,
         paidCents: existingSettlement.paidCents,
         theoreticalPayoutCents: existingSettlement.theoreticalPayoutCents,
@@ -345,8 +432,17 @@ async function settleFromProvider(
       score,
     };
   }
+
+  if (!fixtureTeamsAreResolved(fixture)) {
+    return {
+      outcome: "blocked",
+      message: "本场对阵尚未确认，不能自动结算赛果。",
+    };
+  }
   const blockingPrior = fixtureRows.find(
-    (row) => row.sequence < fixture.sequence && row.status !== "settled"
+    (row) =>
+      row.sequence < fixture.sequence &&
+      (row.status !== "settled" || row.winnerSide === null),
   );
   if (blockingPrior) {
     return {
@@ -463,6 +559,7 @@ async function settleFromProvider(
     note,
     settledAt: now,
   };
+  let concurrentSettlement: typeof settlements.$inferSelect | null = null;
   try {
     // The settlement PK is the concurrency guard. A conflict aborts the whole
     // libSQL batch, so a second result can never overwrite tickets or the fixture.
@@ -517,28 +614,45 @@ async function settleFromProvider(
       .where(eq(settlements.fixtureId, fixture.id))
       .limit(1);
     if (!existingSettlement) throw error;
-    if (!providerSettlementMatches(existingSettlement, score, effectiveHalfTime)) {
+    if (!providerSettlementRegulationMatches(existingSettlement, score)) {
       return {
         outcome: "manual_review",
         message: "本场已按另一份赛果结算，自动同步不会覆盖。",
         score,
       };
     }
-    return {
-      outcome: "settled",
-      message: "并发同步已按相同赛果完成结算。",
-      score,
-      paidCents: existingSettlement.paidCents,
-      theoreticalPayoutCents: existingSettlement.theoreticalPayoutCents,
-    };
+    concurrentSettlement = existingSettlement;
+  }
+
+  if (winnerSide) {
+    try {
+      // The 90-minute pool settlement is already durable. Bracket advancement
+      // is a separate verified transaction and remains retryable while
+      // winnerSide is null if this process stops between the two operations.
+      await persistProgression(db, fixture.id, winnerSide, now);
+    } catch (progressionError) {
+      if (!(progressionError instanceof FixtureProgressionError)) {
+        throw progressionError;
+      }
+      return {
+        outcome: "manual_review",
+        message: progressionError.message,
+        score,
+      };
+    }
   }
 
   return {
     outcome: "settled",
-    message: "已按90分钟常规时间及伤停补时结算。",
+    message: concurrentSettlement
+      ? "并发同步已按相同赛果完成结算。"
+      : !winnerSide
+        ? "已按90分钟比分结算奖池；继续等待加时或点球后的实际胜者。"
+        : "已按90分钟常规时间及伤停补时结算。",
     score,
-    paidCents: poolSettlement.totalPayoutFen,
-    theoreticalPayoutCents: poolSettlement.totalDueFen,
+    paidCents: concurrentSettlement?.paidCents ?? poolSettlement.totalPayoutFen,
+    theoreticalPayoutCents:
+      concurrentSettlement?.theoreticalPayoutCents ?? poolSettlement.totalDueFen,
   };
 }
 
@@ -684,12 +798,21 @@ async function runSync(force = false) {
   }
 
   const dueFixtures = (await db.select().from(fixtures).orderBy(asc(fixtures.sequence))).filter(
-    (fixture) =>
-      fixture.status === "scheduled" && Date.parse(fixture.kickoffAt) <= nowMs
+    (fixture) => {
+      if (Date.parse(fixture.kickoffAt) > nowMs) return false;
+      if (fixture.status === "scheduled") {
+        return fixtureTeamsAreResolved(fixture);
+      }
+      return (
+        fixture.status === "settled" &&
+        fixture.winnerSide === null
+      );
+    },
   );
   const results: Array<Record<string, unknown>> = [];
 
   for (const fixture of dueFixtures) {
+    const bracketResolutionOnly = fixture.status === "settled";
     let providerMatchId = fixture.providerMatchId;
     if (!providerMatchId) {
       const discovery = await discoverProviderMatchId(fixture);
@@ -713,13 +836,25 @@ async function runSync(force = false) {
           });
           continue;
         }
-        await markReviewRequired(
-          db,
-          fixture.id,
-          discovery.message,
-          now,
-          discovery.providerStatus,
-        );
+        if (bracketResolutionOnly) {
+          await audit(
+            db,
+            fixture.id,
+            provider.name,
+            "bracket_review_required",
+            discovery.message,
+            now,
+            discovery.providerStatus,
+          );
+        } else {
+          await markReviewRequired(
+            db,
+            fixture.id,
+            discovery.message,
+            now,
+            discovery.providerStatus,
+          );
+        }
         results.push({
           fixtureId: fixture.id,
           matchCode: fixture.matchCode,
@@ -792,13 +927,25 @@ async function runSync(force = false) {
       continue;
     }
     if (providerResult.outcome === "manual_review" || !providerResult.regularTime) {
-      await markReviewRequired(
-        db,
-        fixture.id,
-        providerResult.message,
-        now,
-        providerResult.providerStatus
-      );
+      if (bracketResolutionOnly) {
+        await audit(
+          db,
+          fixture.id,
+          provider.name,
+          "bracket_review_required",
+          providerResult.message,
+          now,
+          providerResult.providerStatus,
+        );
+      } else {
+        await markReviewRequired(
+          db,
+          fixture.id,
+          providerResult.message,
+          now,
+          providerResult.providerStatus
+        );
+      }
       results.push({
         fixtureId: fixture.id,
         matchCode: fixture.matchCode,
@@ -813,6 +960,7 @@ async function runSync(force = false) {
       fixture.id,
       providerResult.regularTime,
       providerResult.halfTime,
+      providerResult.winnerSide,
       providerResult.providerStatus,
       now
     );
