@@ -39,6 +39,8 @@ export const fixtures = sqliteTable(
     resultSyncDueAt: text("result_sync_due_at").notNull(),
     providerMatchId: text("provider_match_id"),
     status: text("status").notNull().default("scheduled"),
+    halfHome: integer("half_home"),
+    halfAway: integer("half_away"),
     regularHome: integer("regular_home"),
     regularAway: integer("regular_away"),
     resultSource: text("result_source"),
@@ -52,6 +54,29 @@ export const fixtures = sqliteTable(
     uniqueIndex("fixtures_match_code_unique").on(table.matchCode),
     uniqueIndex("fixtures_sequence_unique").on(table.sequence),
     index("fixtures_status_sequence_idx").on(table.status, table.sequence),
+  ]
+);
+
+export const fixtureEntries = sqliteTable(
+  "fixture_entries",
+  {
+    id: text("id").primaryKey(),
+    fixtureId: text("fixture_id")
+      .notNull()
+      .references(() => fixtures.id),
+    participantId: text("participant_id")
+      .notNull()
+      .references(() => participants.id),
+    betCount: integer("bet_count").notNull(),
+    stakeCents: integer("stake_cents").notNull(),
+    lockedAt: text("locked_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("fixture_entries_fixture_participant_unique").on(
+      table.fixtureId,
+      table.participantId
+    ),
+    index("fixture_entries_fixture_locked_idx").on(table.fixtureId, table.lockedAt),
   ]
 );
 
@@ -116,6 +141,8 @@ export const settlements = sqliteTable("settlements", {
   fixtureId: text("fixture_id")
     .primaryKey()
     .references(() => fixtures.id),
+  halfHome: integer("half_home"),
+  halfAway: integer("half_away"),
   regularHome: integer("regular_home").notNull(),
   regularAway: integer("regular_away").notNull(),
   resultBasis: text("result_basis").notNull(),
@@ -141,6 +168,8 @@ export const resultAudits = sqliteTable(
     outcome: text("outcome").notNull(),
     message: text("message").notNull(),
     providerStatus: text("provider_status"),
+    halfHome: integer("half_home"),
+    halfAway: integer("half_away"),
     regularHome: integer("regular_home"),
     regularAway: integer("regular_away"),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),

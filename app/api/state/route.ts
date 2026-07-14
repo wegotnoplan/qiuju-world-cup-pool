@@ -2,6 +2,7 @@ import { and, asc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   bets,
+  fixtureEntries,
   fixtures,
   oddsOffers,
   participants,
@@ -15,6 +16,7 @@ import {
   deriveFixtureStates,
   FIXTURES,
   gradeSelection,
+  matchScoreValidationError,
   MAX_BETS_PER_PARTICIPANT,
   PARTICIPANTS,
   RESULT_BASIS,
@@ -23,6 +25,7 @@ import {
   type Bet,
   type BetSelectionInput,
   type Fixture,
+  type FixtureEntry,
   type FixtureRecordStatus,
   type ManualResultRequest,
   type OddsOffer,
@@ -31,6 +34,7 @@ import {
   type StateMutationRequest,
   type UploadOddsRequest,
 } from "@/lib/app-data";
+import { ALL_SEED_ODDS } from "@/lib/seed-odds";
 import { settlePool } from "@/lib/settlement";
 
 export const dynamic = "force-dynamic";
@@ -50,6 +54,15 @@ function routeError(error: unknown): { message: string; status: number } {
     };
   }
   return { status: 500, message };
+}
+
+function errorChainIncludes(error: unknown, fragment: string): boolean {
+  let current = error;
+  for (let depth = 0; depth < 5 && current instanceof Error; depth += 1) {
+    if (current.message.includes(fragment)) return true;
+    current = current.cause;
+  }
+  return false;
 }
 
 function badRequest(message: string, status = 400): never {
@@ -99,6 +112,34 @@ async function ensureSeedData(db: Database) {
       }))
     )
     .onConflictDoNothing();
+
+  // D1 has a conservative bound-parameter limit. Read existing IDs once and
+  // insert only missing seed rows in small batches instead of sending all 108
+  // screenshot options in one statement.
+  const existingOfferIds = new Set(
+    (await db.select({ id: oddsOffers.id }).from(oddsOffers)).map((row) => row.id),
+  );
+  const missingSeedOffers = ALL_SEED_ODDS.filter(
+    (offer) => offer.id && !existingOfferIds.has(offer.id),
+  ).map((offer) => ({
+    id: offer.id!,
+    fixtureId: offer.id!.startsWith("wc2026-m101-")
+      ? "wc2026-m101"
+      : "wc2026-m102",
+    marketType: offer.marketType,
+    selectionCode: offer.selectionCode,
+    label: offer.label,
+    odds: offer.odds,
+    rulesText: offer.rulesText ?? DEFAULT_RULES_TEXT,
+    source: offer.source ?? "用户提供的竞彩模拟页截图",
+    active: true,
+  }));
+  for (let offset = 0; offset < missingSeedOffers.length; offset += 10) {
+    await db
+      .insert(oddsOffers)
+      .values(missingSeedOffers.slice(offset, offset + 10))
+      .onConflictDoNothing();
+  }
 }
 
 function asRecordStatus(value: string): FixtureRecordStatus {
@@ -112,7 +153,7 @@ function asParticipantId(value: string): ParticipantId {
 
 async function loadState(db: Database, now = new Date().toISOString()): Promise<AppState> {
   await ensureSeedData(db);
-  const [participantRows, fixtureRows, offerRows, betRows, settlementRows] =
+  const [participantRows, fixtureRows, offerRows, entryRows, betRows, settlementRows] =
     await Promise.all([
       db.select().from(participants).orderBy(asc(participants.displayOrder)),
       db.select().from(fixtures).orderBy(asc(fixtures.sequence)),
@@ -121,6 +162,7 @@ async function loadState(db: Database, now = new Date().toISOString()): Promise<
         .from(oddsOffers)
         .where(eq(oddsOffers.active, true))
         .orderBy(asc(oddsOffers.marketType), asc(oddsOffers.label)),
+      db.select().from(fixtureEntries).orderBy(asc(fixtureEntries.lockedAt)),
       db.select().from(bets).orderBy(asc(bets.placedAt), asc(bets.id)),
       db.select().from(settlements),
     ]);
@@ -145,9 +187,17 @@ async function loadState(db: Database, now = new Date().toISOString()): Promise<
 
   const mappedSettlements: Settlement[] = settlementRows.map((row) => ({
     fixtureId: row.fixtureId,
+    halfTimeScore:
+      row.halfHome === null || row.halfAway === null
+        ? null
+        : { home: row.halfHome, away: row.halfAway },
     regularTimeScore: { home: row.regularHome, away: row.regularAway },
     resultBasis: RESULT_BASIS,
-    resultSource: row.resultSource === "football-data.org" ? "football-data.org" : "manual",
+    resultSource:
+      row.resultSource === "external-provider" ||
+      row.resultSource === "football-data.org"
+        ? row.resultSource
+        : "manual",
     poolBeforeCents: row.poolBeforeCents,
     currentFixtureStakeCents: row.currentFixtureStakeCents,
     eligiblePoolCents: row.eligiblePoolCents,
@@ -185,12 +235,18 @@ async function loadState(db: Database, now = new Date().toISOString()): Promise<
     recordStatus: asRecordStatus(row.status),
     status: "locked",
     isBettingOpen: false,
+    halfTimeScore:
+      row.halfHome === null || row.halfAway === null
+        ? null
+        : { home: row.halfHome, away: row.halfAway },
     regularTimeScore:
       row.regularHome === null || row.regularAway === null
         ? null
         : { home: row.regularHome, away: row.regularAway },
     resultSource:
-      row.resultSource === "manual" || row.resultSource === "football-data.org"
+      row.resultSource === "manual" ||
+      row.resultSource === "football-data.org" ||
+      row.resultSource === "external-provider"
         ? row.resultSource
         : null,
     resultBasis: row.resultBasis === RESULT_BASIS ? RESULT_BASIS : null,
@@ -216,6 +272,14 @@ async function loadState(db: Database, now = new Date().toISOString()): Promise<
     payoutCents: row.payoutCents,
     settledAt: row.settledAt,
   }));
+  const mappedEntries: FixtureEntry[] = entryRows.map((row) => ({
+    id: row.id,
+    fixtureId: row.fixtureId,
+    participantId: asParticipantId(row.participantId),
+    betCount: row.betCount,
+    stakeCents: row.stakeCents,
+    lockedAt: row.lockedAt,
+  }));
   const contributedCents = mappedBets.reduce((sum, bet) => sum + bet.stakeCents, 0);
   const paidCents = mappedBets.reduce((sum, bet) => sum + bet.payoutCents, 0);
 
@@ -232,6 +296,7 @@ async function loadState(db: Database, now = new Date().toISOString()): Promise<
         active: row.active,
       })),
     fixtures: derived.fixtures,
+    entries: mappedEntries,
     bets: mappedBets,
     settlements: mappedSettlements,
     pool: {
@@ -244,13 +309,24 @@ async function loadState(db: Database, now = new Date().toISOString()): Promise<
 }
 
 function activeFixtureForRows<
-  T extends { id: string; kickoffAt: string; lockAt: string; sequence: number }
+  T extends {
+    id: string;
+    kickoffAt: string;
+    lockAt: string;
+    sequence: number;
+    status: string;
+  }
 >(fixtureRows: T[], now: string): T | null {
   const nowMs = Date.parse(now);
   const next = [...fixtureRows]
-    .filter((fixture) => Date.parse(fixture.kickoffAt) > nowMs)
+    .filter((fixture) => fixture.status !== "settled")
     .sort((a, b) => a.sequence - b.sequence)[0];
-  return next && nowMs < Date.parse(next.lockAt) ? next : null;
+  return next &&
+    next.status === "scheduled" &&
+    Date.parse(next.kickoffAt) > nowMs &&
+    nowMs < Date.parse(next.lockAt)
+    ? next
+    : null;
 }
 
 function validateParticipantId(value: unknown): ParticipantId {
@@ -294,15 +370,96 @@ function resolveOffers(
   return resolved;
 }
 
-async function placeBets(
+function normalizeMarketValue(value: string): string {
+  return value.trim().toUpperCase().replace(/[\s-]+/g, "_");
+}
+
+function selectionsMatchLockedBets(
+  selections: BetSelectionInput[],
+  lockedBets: (typeof bets.$inferSelect)[],
+): boolean {
+  if (selections.length !== lockedBets.length) return false;
+  const matchedBetIds = new Set<string>();
+
+  for (const selection of selections) {
+    const requestedId = selection.offerId ?? selection.id;
+    let matched = requestedId
+      ? lockedBets.find((bet) => bet.offerId === requestedId)
+      : undefined;
+    if (!matched && selection.marketType && selection.selectionCode) {
+      const marketType = normalizeMarketValue(selection.marketType);
+      const selectionCode = normalizeMarketValue(selection.selectionCode);
+      matched = lockedBets.find(
+        (bet) =>
+          normalizeMarketValue(bet.marketType) === marketType &&
+          normalizeMarketValue(bet.selectionCode) === selectionCode,
+      );
+    }
+    if (!matched || matchedBetIds.has(matched.id)) return false;
+    if (
+      selection.odds !== undefined &&
+      (!Number.isFinite(selection.odds) || Math.abs(selection.odds - matched.odds) > 1e-9)
+    ) {
+      return false;
+    }
+    matchedBetIds.add(matched.id);
+  }
+
+  return matchedBetIds.size === lockedBets.length;
+}
+
+async function lockedBetsForParticipant(
   db: Database,
-  payload: Extract<StateMutationRequest, { action: "place-bets" }>,
+  fixtureId: string,
+  participantId: ParticipantId,
+) {
+  return db
+    .select()
+    .from(bets)
+    .where(
+      and(eq(bets.fixtureId, fixtureId), eq(bets.participantId, participantId)),
+    );
+}
+
+async function lockEntry(
+  db: Database,
+  payload:
+    | Extract<StateMutationRequest, { action: "place-bets" }>
+    | Extract<StateMutationRequest, { action: "lock-entry" }>,
   now: string
 ) {
   const participantId = validateParticipantId(payload.participantId);
   if (!Array.isArray(payload.selections)) badRequest("selections 必须是数组。", 400);
+  if (payload.selections.length === 0) {
+    badRequest("锁定加入奖池前至少要选择1注。", 400);
+  }
   if (payload.selections.length > MAX_BETS_PER_PARTICIPANT) {
     badRequest(`每人每场最多${MAX_BETS_PER_PARTICIPANT}注。`, 400);
+  }
+
+  const [existingEntry] = await db
+    .select({ id: fixtureEntries.id })
+    .from(fixtureEntries)
+    .where(
+      and(
+        eq(fixtureEntries.fixtureId, payload.fixtureId),
+        eq(fixtureEntries.participantId, participantId)
+      )
+    )
+    .limit(1);
+  // Retry-safe even if the first successful response was lost or the global
+  // lock time passed between attempts. A different selection set is a real
+  // mutation attempt and must not be reported as a successful retry.
+  if (existingEntry) {
+    const lockedBets = await lockedBetsForParticipant(
+      db,
+      payload.fixtureId,
+      participantId,
+    );
+    if (!selectionsMatchLockedBets(payload.selections, lockedBets)) {
+      badRequest("该参与者已经锁定，本场下注不能修改。", 409);
+    }
+    return;
   }
 
   const fixtureRows = await db.select().from(fixtures).orderBy(asc(fixtures.sequence));
@@ -323,27 +480,56 @@ async function placeBets(
     .limit(1);
   if (!participantExists[0]) badRequest("参与者无效或已停用。", 400);
 
-  await db
-    .delete(bets)
-    .where(
-      and(eq(bets.fixtureId, payload.fixtureId), eq(bets.participantId, participantId))
-    );
-  if (selectedOffers.length > 0) {
-    await db.insert(bets).values(
-      selectedOffers.map((offer) => ({
-        id: crypto.randomUUID(),
+  const entryId = crypto.randomUUID();
+  try {
+    await db.batch([
+      db.insert(fixtureEntries).values({
+        id: entryId,
         fixtureId: payload.fixtureId,
         participantId,
-        offerId: offer.id,
-        marketType: offer.marketType,
-        selectionCode: offer.selectionCode,
-        label: offer.label,
-        odds: offer.odds,
-        stakeCents: STAKE_CENTS,
-        placedAt: now,
-        status: "pending",
-      }))
+        betCount: selectedOffers.length,
+        stakeCents: selectedOffers.length * STAKE_CENTS,
+        lockedAt: now,
+      }),
+      db.insert(bets).values(
+        selectedOffers.map((offer) => ({
+          id: crypto.randomUUID(),
+          fixtureId: payload.fixtureId,
+          participantId,
+          offerId: offer.id,
+          marketType: offer.marketType,
+          selectionCode: offer.selectionCode,
+          label: offer.label,
+          odds: offer.odds,
+          stakeCents: STAKE_CENTS,
+          placedAt: now,
+          status: "pending",
+        })),
+      ),
+    ]);
+  } catch (error) {
+    // Two first-time requests can race past the initial read. D1 batch is
+    // atomic, so a unique-entry conflict leaves exactly one complete entry.
+    if (!errorChainIncludes(error, "UNIQUE constraint failed")) throw error;
+    const [racedEntry] = await db
+      .select({ id: fixtureEntries.id })
+      .from(fixtureEntries)
+      .where(
+        and(
+          eq(fixtureEntries.fixtureId, payload.fixtureId),
+          eq(fixtureEntries.participantId, participantId),
+        ),
+      )
+      .limit(1);
+    if (!racedEntry) throw error;
+    const lockedBets = await lockedBetsForParticipant(
+      db,
+      payload.fixtureId,
+      participantId,
     );
+    if (!selectionsMatchLockedBets(payload.selections, lockedBets)) {
+      badRequest("该参与者已经锁定，本场下注不能修改。", 409);
+    }
   }
 }
 
@@ -425,18 +611,40 @@ async function uploadOdds(db: Database, payload: UploadOddsRequest, now: string)
 
 interface SettleInput {
   fixtureId: string;
+  halfHome: number | null;
+  halfAway: number | null;
   regularHome: number;
   regularAway: number;
-  source: "football-data.org" | "manual";
+  source: "external-provider" | "football-data.org" | "manual";
   note: string;
   now: string;
+}
+
+function settlementMatchesInput(
+  settlement: typeof settlements.$inferSelect,
+  input: SettleInput,
+): boolean {
+  return (
+    settlement.regularHome === input.regularHome &&
+    settlement.regularAway === input.regularAway &&
+    settlement.halfHome === input.halfHome &&
+    settlement.halfAway === input.halfAway
+  );
 }
 
 async function settleFixture(db: Database, input: SettleInput) {
   const fixtureRows = await db.select().from(fixtures).orderBy(asc(fixtures.sequence));
   const fixture = fixtureRows.find((row) => row.id === input.fixtureId);
   if (!fixture) badRequest("比赛不存在。", 404);
-  if (fixture.status === "settled") return;
+  if (fixture.status === "settled") {
+    const [existingSettlement] = await db
+      .select()
+      .from(settlements)
+      .where(eq(settlements.fixtureId, fixture.id))
+      .limit(1);
+    if (existingSettlement && settlementMatchesInput(existingSettlement, input)) return;
+    badRequest("本场已经按另一份赛果结算，不能覆盖。", 409);
+  }
 
   const blockingPrior = fixtureRows.find(
     (row) => row.sequence < fixture.sequence && row.status !== "settled"
@@ -451,42 +659,57 @@ async function settleFixture(db: Database, input: SettleInput) {
     .where(eq(bets.fixtureId, fixture.id))
     .orderBy(asc(bets.placedAt), asc(bets.id));
   const score = { home: input.regularHome, away: input.regularAway };
+  const halfTimeScore =
+    input.halfHome === null || input.halfAway === null
+      ? null
+      : { home: input.halfHome, away: input.halfAway };
   const graded = fixtureBets.map((bet) => ({
     bet,
-    grade: gradeSelection(bet.marketType, bet.selectionCode, score),
+    grade: gradeSelection(bet.marketType, bet.selectionCode, score, halfTimeScore),
   }));
   const unsupported = graded.filter((item) => item.grade === "unsupported");
   if (unsupported.length > 0) {
     const message = `有${unsupported.length}注无法仅凭常规时间比分自动判定，需要人工复核。`;
-    for (const item of unsupported) {
-      await db
+    const [firstUnsupported, ...remainingUnsupported] = unsupported;
+    await db.batch([
+      db
         .update(bets)
         .set({ status: "review_required" })
-        .where(eq(bets.id, item.bet.id));
-    }
-    await db
-      .update(fixtures)
-      .set({
-        status: "review_required",
+        .where(eq(bets.id, firstUnsupported.bet.id)),
+      ...remainingUnsupported.map((item) =>
+        db
+          .update(bets)
+          .set({ status: "review_required" })
+          .where(eq(bets.id, item.bet.id)),
+      ),
+      db
+        .update(fixtures)
+        .set({
+          status: "review_required",
+          halfHome: halfTimeScore?.home ?? null,
+          halfAway: halfTimeScore?.away ?? null,
+          regularHome: score.home,
+          regularAway: score.away,
+          resultSource: input.source,
+          resultBasis: RESULT_BASIS,
+          reviewNote: `${message} ${input.note}`.trim(),
+          updatedAt: input.now,
+        })
+        .where(eq(fixtures.id, fixture.id)),
+      db.insert(resultAudits).values({
+        id: crypto.randomUUID(),
+        fixtureId: fixture.id,
+        source: input.source,
+        outcome: "review_required",
+        message,
+        providerStatus: input.source === "football-data.org" ? "FINISHED" : "MANUAL",
+        halfHome: halfTimeScore?.home ?? null,
+        halfAway: halfTimeScore?.away ?? null,
         regularHome: score.home,
         regularAway: score.away,
-        resultSource: input.source,
-        resultBasis: RESULT_BASIS,
-        reviewNote: `${message} ${input.note}`.trim(),
-        updatedAt: input.now,
-      })
-      .where(eq(fixtures.id, fixture.id));
-    await db.insert(resultAudits).values({
-      id: crypto.randomUUID(),
-      fixtureId: fixture.id,
-      source: input.source,
-      outcome: "review_required",
-      message,
-      providerStatus: input.source === "football-data.org" ? "FINISHED" : "MANUAL",
-      regularHome: score.home,
-      regularAway: score.away,
-      createdAt: input.now,
-    });
+        createdAt: input.now,
+      }),
+    ] as const);
     return;
   }
 
@@ -520,77 +743,94 @@ async function settleFixture(db: Database, input: SettleInput) {
     poolSettlement.tickets.map((ticket) => [ticket.ticketId, ticket])
   );
 
-  for (const item of graded) {
-    const settledTicket = settledTicketById.get(item.bet.id);
-    await db
-      .update(bets)
-      .set({
-        status: item.grade,
-        theoreticalPayoutCents: settledTicket?.amountDueFen ?? 0,
-        payoutCents: settledTicket?.payoutFen ?? 0,
-        settledAt: input.now,
-      })
-      .where(eq(bets.id, item.bet.id));
-  }
-
-  await db
-    .insert(settlements)
-    .values({
-      fixtureId: fixture.id,
-      regularHome: score.home,
-      regularAway: score.away,
-      resultBasis: RESULT_BASIS,
-      resultSource: input.source,
-      poolBeforeCents,
-      currentFixtureStakeCents,
-      eligiblePoolCents,
-      theoreticalPayoutCents: poolSettlement.totalDueFen,
-      paidCents: poolSettlement.totalPayoutFen,
-      scaleBps:
-        poolSettlement.totalDueFen === 0
-          ? 10_000
-          : Math.round((poolSettlement.totalPayoutFen / poolSettlement.totalDueFen) * 10_000),
-      note: input.note,
-      settledAt: input.now,
-    })
-    .onConflictDoNothing();
-  await db
-    .update(fixtures)
-    .set({
-      status: "settled",
-      regularHome: score.home,
-      regularAway: score.away,
-      resultSource: input.source,
-      resultBasis: RESULT_BASIS,
-      reviewNote: null,
-      settledAt: input.now,
-      updatedAt: input.now,
-    })
-    .where(eq(fixtures.id, fixture.id));
-  await db.insert(resultAudits).values({
-    id: crypto.randomUUID(),
+  const settlementValue = {
     fixtureId: fixture.id,
-    source: input.source,
-    outcome: "settled",
-    message: input.note,
-    providerStatus: input.source === "football-data.org" ? "FINISHED" : "MANUAL",
+    halfHome: halfTimeScore?.home ?? null,
+    halfAway: halfTimeScore?.away ?? null,
     regularHome: score.home,
     regularAway: score.away,
-    createdAt: input.now,
-  });
+    resultBasis: RESULT_BASIS,
+    resultSource: input.source,
+    poolBeforeCents,
+    currentFixtureStakeCents,
+    eligiblePoolCents,
+    theoreticalPayoutCents: poolSettlement.totalDueFen,
+    paidCents: poolSettlement.totalPayoutFen,
+    scaleBps:
+      poolSettlement.totalDueFen === 0
+        ? 10_000
+        : Math.round((poolSettlement.totalPayoutFen / poolSettlement.totalDueFen) * 10_000),
+    note: input.note,
+    settledAt: input.now,
+  };
+  try {
+    // The settlement PK is the concurrency guard. It intentionally has no
+    // conflict-ignore clause: if another request wins, this entire D1 batch
+    // rolls back instead of overwriting bets/fixture with a second result.
+    await db.batch([
+      db.insert(settlements).values(settlementValue),
+      ...graded.map((item) => {
+        const settledTicket = settledTicketById.get(item.bet.id);
+        return db
+          .update(bets)
+          .set({
+            status: item.grade,
+            theoreticalPayoutCents: settledTicket?.amountDueFen ?? 0,
+            payoutCents: settledTicket?.payoutFen ?? 0,
+            settledAt: input.now,
+          })
+          .where(eq(bets.id, item.bet.id));
+      }),
+      db
+        .update(fixtures)
+        .set({
+          status: "settled",
+          halfHome: halfTimeScore?.home ?? null,
+          halfAway: halfTimeScore?.away ?? null,
+          regularHome: score.home,
+          regularAway: score.away,
+          resultSource: input.source,
+          resultBasis: RESULT_BASIS,
+          reviewNote: null,
+          settledAt: input.now,
+          updatedAt: input.now,
+        })
+        .where(eq(fixtures.id, fixture.id)),
+      db.insert(resultAudits).values({
+        id: crypto.randomUUID(),
+        fixtureId: fixture.id,
+        source: input.source,
+        outcome: "settled",
+        message: input.note,
+        providerStatus: input.source === "football-data.org" ? "FINISHED" : "MANUAL",
+        halfHome: halfTimeScore?.home ?? null,
+        halfAway: halfTimeScore?.away ?? null,
+        regularHome: score.home,
+        regularAway: score.away,
+        createdAt: input.now,
+      }),
+    ] as const);
+  } catch (error) {
+    if (!errorChainIncludes(error, "UNIQUE constraint failed")) throw error;
+    const [existingSettlement] = await db
+      .select()
+      .from(settlements)
+      .where(eq(settlements.fixtureId, fixture.id))
+      .limit(1);
+    if (!existingSettlement) throw error;
+    if (!settlementMatchesInput(existingSettlement, input)) {
+      badRequest("本场已经按另一份赛果结算，不能覆盖。", 409);
+    }
+  }
 }
 
 async function manualResult(db: Database, payload: ManualResultRequest, now: string) {
-  if (
-    !Number.isInteger(payload.regulationHome) ||
-    !Number.isInteger(payload.regulationAway) ||
-    payload.regulationHome < 0 ||
-    payload.regulationAway < 0 ||
-    payload.regulationHome > 99 ||
-    payload.regulationAway > 99
-  ) {
-    badRequest("常规时间比分必须是0到99之间的整数。", 400);
-  }
+  const hasHalf = payload.halfHome !== undefined || payload.halfAway !== undefined;
+  const scoreError = matchScoreValidationError(
+    { home: payload.regulationHome, away: payload.regulationAway },
+    hasHalf ? { home: payload.halfHome, away: payload.halfAway } : null,
+  );
+  if (scoreError) badRequest(scoreError, 400);
   if (typeof payload.reason !== "string" || payload.reason.trim().length < 3) {
     badRequest("人工录入必须填写复核原因。", 400);
   }
@@ -605,6 +845,8 @@ async function manualResult(db: Database, payload: ManualResultRequest, now: str
   }
   await settleFixture(db, {
     fixtureId: payload.fixtureId,
+    halfHome: hasHalf ? (payload.halfHome as number) : null,
+    halfAway: hasHalf ? (payload.halfAway as number) : null,
     regularHome: payload.regulationHome,
     regularAway: payload.regulationAway,
     source: "manual",
@@ -635,8 +877,8 @@ export async function POST(request: Request) {
     await ensureSeedData(db);
     const now = new Date().toISOString();
 
-    if (payload.action === "place-bets") {
-      await placeBets(db, payload, now);
+    if (payload.action === "place-bets" || payload.action === "lock-entry") {
+      await lockEntry(db, payload, now);
     } else if (payload.action === "upload-odds") {
       await uploadOdds(db, payload, now);
     } else if (payload.action === "manual-result") {

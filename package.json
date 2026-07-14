@@ -9,7 +9,7 @@
     "dev": "vinext dev",
     "build": "vinext build",
     "start": "vinext start",
-    "test": "node --experimental-strip-types --test tests/settlement.test.mjs && npm run build && node --test tests/rendered-html.test.mjs",
+    "test": "node --experimental-strip-types --test tests/settlement.test.mjs tests/odds-markets.test.mjs && npm run build && node --test tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
     "db:local": "wrangler d1 migrations apply site-creator-d1 --local --config wrangler.local.jsonc --persist-to .wrangler/state"

@@ -1,4 +1,4 @@
-export const APP_STATE_VERSION = 1 as const;
+export const APP_STATE_VERSION = 2 as const;
 export const STAKE_CENTS = 1_000;
 export const MAX_BETS_PER_PARTICIPANT = 3;
 export const LOCK_MINUTES_BEFORE_KICKOFF = 120;
@@ -47,6 +47,56 @@ export interface RegulationScore {
   away: number;
 }
 
+type MatchScoreInput = {
+  home?: unknown;
+  away?: unknown;
+};
+
+/**
+ * Validates a normalized result before it reaches any market grader. A
+ * missing half-time score is allowed, but a supplied score must be complete
+ * and cannot exceed the 90-minute score for either team.
+ */
+export function matchScoreValidationError(
+  regularTime: MatchScoreInput,
+  halfTime: MatchScoreInput | null,
+): string | null {
+  if (
+    !Number.isSafeInteger(regularTime.home) ||
+    !Number.isSafeInteger(regularTime.away) ||
+    (regularTime.home as number) < 0 ||
+    (regularTime.away as number) < 0 ||
+    (regularTime.home as number) > 99 ||
+    (regularTime.away as number) > 99
+  ) {
+    return "90分钟比分必须是0到99之间的整数。";
+  }
+
+  if (halfTime === null) return null;
+  if (
+    !Number.isSafeInteger(halfTime.home) ||
+    !Number.isSafeInteger(halfTime.away) ||
+    (halfTime.home as number) < 0 ||
+    (halfTime.away as number) < 0 ||
+    (halfTime.home as number) > 99 ||
+    (halfTime.away as number) > 99
+  ) {
+    return "半场比分必须同时填写0到99之间的整数。";
+  }
+  if (
+    (halfTime.home as number) > (regularTime.home as number) ||
+    (halfTime.away as number) > (regularTime.away as number)
+  ) {
+    return "半场比分不能大于90分钟比分。";
+  }
+  return null;
+}
+
+export type ResultSource =
+  | "external-provider"
+  | "football-data.org"
+  | "manual";
+
 export interface OddsOffer {
   id: string;
   fixtureId: string;
@@ -86,9 +136,10 @@ export interface Bet {
 
 export interface Settlement {
   fixtureId: string;
+  halfTimeScore: RegulationScore | null;
   regularTimeScore: RegulationScore;
   resultBasis: typeof RESULT_BASIS;
-  resultSource: "football-data.org" | "manual";
+  resultSource: ResultSource;
   poolBeforeCents: number;
   currentFixtureStakeCents: number;
   eligiblePoolCents: number;
@@ -113,12 +164,22 @@ export interface Fixture {
   recordStatus: FixtureRecordStatus;
   status: FixtureStatus;
   isBettingOpen: boolean;
+  halfTimeScore: RegulationScore | null;
   regularTimeScore: RegulationScore | null;
-  resultSource: "football-data.org" | "manual" | null;
+  resultSource: ResultSource | null;
   resultBasis: typeof RESULT_BASIS | null;
   reviewNote: string | null;
   offers: OddsOffer[];
   settlement: Settlement | null;
+}
+
+export interface FixtureEntry {
+  id: string;
+  fixtureId: string;
+  participantId: ParticipantId;
+  betCount: number;
+  stakeCents: number;
+  lockedAt: string;
 }
 
 export interface PoolSummary {
@@ -145,6 +206,7 @@ export interface AppState {
   activeFixtureId: string | null;
   participants: Participant[];
   fixtures: Fixture[];
+  entries: FixtureEntry[];
   bets: Bet[];
   settlements: Settlement[];
   pool: PoolSummary;
@@ -165,6 +227,14 @@ export interface PlaceBetsRequest {
   fixtureId: string;
   participantId: ParticipantId;
   selections: BetSelectionInput[];
+}
+
+export interface LockEntryRequest {
+  action: "lock-entry";
+  fixtureId: string;
+  participantId: ParticipantId;
+  selections: BetSelectionInput[];
+  idempotencyKey?: string;
 }
 
 export interface OddsOfferInput {
@@ -188,6 +258,8 @@ export interface UploadOddsRequest {
 export interface ManualResultRequest {
   action: "manual-result";
   fixtureId: string;
+  halfHome?: number;
+  halfAway?: number;
   regulationHome: number;
   regulationAway: number;
   reason: string;
@@ -195,6 +267,7 @@ export interface ManualResultRequest {
 
 export type StateMutationRequest =
   | PlaceBetsRequest
+  | LockEntryRequest
   | UploadOddsRequest
   | ManualResultRequest;
 
@@ -214,6 +287,7 @@ type SeedFixture = Omit<
   | "isBettingOpen"
   | "offers"
   | "settlement"
+  | "halfTimeScore"
   | "regularTimeScore"
   | "resultSource"
   | "resultBasis"
@@ -230,7 +304,7 @@ export const FIXTURES: readonly SeedFixture[] = [
     awayTeam: { code: "ESP", name: "西班牙", englishName: "Spain" },
     kickoffAt: "2026-07-15T03:00:00+08:00",
     lockAt: "2026-07-15T01:00:00+08:00",
-    resultSyncDueAt: "2026-07-15T08:00:00+08:00",
+    resultSyncDueAt: "2026-07-15T07:00:00+08:00",
     providerMatchId: null,
     recordStatus: "scheduled",
   },
@@ -243,7 +317,7 @@ export const FIXTURES: readonly SeedFixture[] = [
     awayTeam: { code: "ARG", name: "阿根廷", englishName: "Argentina" },
     kickoffAt: "2026-07-16T03:00:00+08:00",
     lockAt: "2026-07-16T01:00:00+08:00",
-    resultSyncDueAt: "2026-07-16T08:00:00+08:00",
+    resultSyncDueAt: "2026-07-16T07:00:00+08:00",
     providerMatchId: null,
     recordStatus: "scheduled",
   },
@@ -266,7 +340,7 @@ export const FIXTURES: readonly SeedFixture[] = [
     },
     kickoffAt: "2026-07-19T05:00:00+08:00",
     lockAt: "2026-07-19T03:00:00+08:00",
-    resultSyncDueAt: "2026-07-19T10:00:00+08:00",
+    resultSyncDueAt: "2026-07-19T09:00:00+08:00",
     providerMatchId: null,
     recordStatus: "scheduled",
   },
@@ -289,7 +363,7 @@ export const FIXTURES: readonly SeedFixture[] = [
     },
     kickoffAt: "2026-07-20T03:00:00+08:00",
     lockAt: "2026-07-20T01:00:00+08:00",
-    resultSyncDueAt: "2026-07-20T08:00:00+08:00",
+    resultSyncDueAt: "2026-07-20T07:00:00+08:00",
     providerMatchId: null,
     recordStatus: "scheduled",
   },
@@ -321,11 +395,16 @@ export function deriveFixtureStates(
   now = new Date().toISOString()
 ): { fixtures: Fixture[]; activeFixtureId: string | null } {
   const nowMs = validTime(now);
+  // The pool advances serially. A later fixture stays locked until every
+  // earlier fixture is settled, even if its own kickoff is still in the future.
   const nextNotStarted = [...fixtures]
-    .filter((fixture) => validTime(fixture.kickoffAt) > nowMs)
+    .filter((fixture) => fixture.recordStatus !== "settled")
     .sort((a, b) => a.sequence - b.sequence)[0];
   const activeFixtureId =
-    nextNotStarted && nowMs < validTime(nextNotStarted.lockAt)
+    nextNotStarted &&
+    nextNotStarted.recordStatus === "scheduled" &&
+    validTime(nextNotStarted.kickoffAt) > nowMs &&
+    nowMs < validTime(nextNotStarted.lockAt)
       ? nextNotStarted.id
       : null;
 
@@ -363,6 +442,7 @@ export function createSeedState(now = new Date().toISOString()): AppState {
     awayTeam: { ...fixture.awayTeam },
     status: "locked",
     isBettingOpen: false,
+    halfTimeScore: null,
     regularTimeScore: null,
     resultSource: null,
     resultBasis: null,
@@ -378,6 +458,7 @@ export function createSeedState(now = new Date().toISOString()): AppState {
     activeFixtureId: derived.activeFixtureId,
     participants: PARTICIPANTS.map((participant) => ({ ...participant })),
     fixtures: derived.fixtures,
+    entries: [],
     bets: [],
     settlements: [],
     pool: { contributedCents: 0, paidCents: 0, balanceCents: 0 },
@@ -397,7 +478,8 @@ function parseNumberCode(value: string): number | null {
 export function gradeSelection(
   marketType: string,
   selectionCode: string,
-  score: RegulationScore
+  score: RegulationScore,
+  halfTimeScore: RegulationScore | null = null
 ): BetGrade {
   const market = marketType.trim().toUpperCase().replace(/[\s-]+/g, "_");
   const code = selectionCode.trim().toUpperCase().replace(/\s+/g, "_");
@@ -408,6 +490,14 @@ export function gradeSelection(
     if (["HOME", "HOME_WIN", "1"].includes(code)) return home > away ? "won" : "lost";
     if (["DRAW", "X"].includes(code)) return home === away ? "won" : "lost";
     if (["AWAY", "AWAY_WIN", "2"].includes(code)) return away > home ? "won" : "lost";
+    return "unsupported";
+  }
+
+  if (["HANDICAP_1X2_HOME_MINUS_1", "HANDICAP_3WAY_HOME_MINUS_1"].includes(market)) {
+    const adjustedMargin = home - 1 - away;
+    if (["HOME", "1"].includes(code)) return adjustedMargin > 0 ? "won" : "lost";
+    if (["DRAW", "X"].includes(code)) return adjustedMargin === 0 ? "won" : "lost";
+    if (["AWAY", "2"].includes(code)) return adjustedMargin < 0 ? "won" : "lost";
     return "unsupported";
   }
 
@@ -441,9 +531,46 @@ export function gradeSelection(
   }
 
   if (["EXACT_SCORE", "CORRECT_SCORE"].includes(market)) {
+    const listedHomeScores = new Set([
+      "1-0", "2-0", "2-1", "3-0", "3-1", "3-2",
+      "4-0", "4-1", "4-2", "5-0", "5-1", "5-2",
+    ]);
+    const listedDrawScores = new Set(["0-0", "1-1", "2-2", "3-3"]);
+    const listedAwayScores = new Set([
+      "0-1", "0-2", "1-2", "0-3", "1-3", "2-3",
+      "0-4", "1-4", "2-4", "0-5", "1-5", "2-5",
+    ]);
+    const actualCode = `${home}-${away}`;
+    if (code === "HOME_OTHER") {
+      return home > away && !listedHomeScores.has(actualCode) ? "won" : "lost";
+    }
+    if (code === "DRAW_OTHER") {
+      return home === away && !listedDrawScores.has(actualCode) ? "won" : "lost";
+    }
+    if (code === "AWAY_OTHER") {
+      return away > home && !listedAwayScores.has(actualCode) ? "won" : "lost";
+    }
     const match = code.match(/^(?:HOME_)?([0-9]+)(?:_AWAY_|-|:)([0-9]+)$/);
     if (!match) return "unsupported";
     return home === Number(match[1]) && away === Number(match[2]) ? "won" : "lost";
+  }
+
+  if (["TOTAL_GOALS_EXACT", "EXACT_TOTAL_GOALS"].includes(market)) {
+    if (code === "7_PLUS") return total >= 7 ? "won" : "lost";
+    const exact = Number(code);
+    if (!Number.isInteger(exact) || exact < 0) return "unsupported";
+    return total === exact ? "won" : "lost";
+  }
+
+  if (["HALF_FULL_TIME", "HALF_FULL"].includes(market)) {
+    if (!halfTimeScore) return "unsupported";
+    const outcome = (value: RegulationScore) =>
+      value.home > value.away ? "HOME" : value.home < value.away ? "AWAY" : "DRAW";
+    const [half, full, ...rest] = code.split("_");
+    if (rest.length > 0 || !half || !full) return "unsupported";
+    if (!["HOME", "DRAW", "AWAY"].includes(half)) return "unsupported";
+    if (!["HOME", "DRAW", "AWAY"].includes(full)) return "unsupported";
+    return half === outcome(halfTimeScore) && full === outcome(score) ? "won" : "lost";
   }
 
   if (["DRAW_NO_BET", "DNB"].includes(market)) {

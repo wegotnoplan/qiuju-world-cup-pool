@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { WorldCupPoolApp } from "./components/WorldCupPoolApp";
+import { PoolWorkbench } from "./components/PoolWorkbench";
 
 export const metadata: Metadata = {
   title: "球局 · 世界杯奖池",
@@ -7,5 +7,5 @@ export const metadata: Metadata = {
 };
 
 export default function Home() {
-  return <WorldCupPoolApp />;
+  return <PoolWorkbench />;
 }
