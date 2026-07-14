@@ -119,7 +119,7 @@ function publicError(error: unknown): Response {
   return Response.json(
     {
       error: missingTable
-        ? "API-Football 缓存表尚未初始化，请先应用最新 D1 migration。"
+        ? "API-Football 缓存表尚未初始化，请先应用最新数据库 migration。"
         : "API-Football 代理暂时不可用。",
     },
     { status: 503 },

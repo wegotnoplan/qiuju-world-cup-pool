@@ -179,7 +179,7 @@ export const resultAudits = sqliteTable(
 
 /**
  * A small persistent cache shared by the widget proxy and result sync.
- * Keeping successful upstream payloads in D1 prevents every browser tab from
+ * Keeping successful upstream payloads in libSQL prevents every browser tab from
  * spending the API-Football free-plan allowance independently.
  */
 export const apiFootballCache = sqliteTable(

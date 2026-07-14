@@ -438,7 +438,7 @@ async function settleFromProvider(
   };
   try {
     // The settlement PK is the concurrency guard. A conflict aborts the whole
-    // D1 batch, so a second result can never overwrite tickets or the fixture.
+    // libSQL batch, so a second result can never overwrite tickets or the fixture.
     await db.batch([
       db.insert(settlements).values(settlementValue),
       ...graded.map((item) => {
@@ -787,7 +787,7 @@ function errorResponse(error: unknown) {
   return Response.json(
     {
       error: noTable
-        ? "D1 tables are not ready. Generate and apply the Drizzle migration first."
+        ? "Database tables are not ready. Apply the Drizzle migrations first."
         : message,
     },
     { status: noTable ? 503 : 500 }
@@ -805,7 +805,10 @@ export async function GET() {
 
 export async function POST() {
   try {
-    return Response.json(await runSync(true));
+    // Public deployments must never let a browser bypass the persistent
+    // provider cooldown. The button remains useful as an immediate catch-up
+    // check while repeated clicks reuse the same cached/audited result.
+    return Response.json(await runSync(false));
   } catch (error) {
     return errorResponse(error);
   }

@@ -6,15 +6,17 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "vinext dev",
-    "build": "vinext build",
-    "start": "vinext start",
+    "dev": "npm run db:migrate && next dev",
+    "build": "next build",
+    "start": "next start",
     "test": "node --experimental-strip-types --test tests/settlement.test.mjs tests/odds-markets.test.mjs && npm run build && node --test tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
-    "db:local": "wrangler d1 migrations apply site-creator-d1 --local --config wrangler.local.jsonc --persist-to .wrangler/state"
+    "db:migrate": "node --env-file-if-exists=.env.local scripts/migrate.mjs",
+    "db:local": "npm run db:migrate"
   },
   "dependencies": {
+    "@libsql/client": "^0.17.4",
     "drizzle-orm": "0.45.2",
     "next": "16.2.6",
     "react": "19.2.6",

@@ -50,7 +50,7 @@ function routeError(error: unknown): { message: string; status: number } {
     return {
       status: 503,
       message:
-        "D1 tables are not ready. Generate and apply the Drizzle migration before using the app.",
+        "Database tables are not ready. Apply the Drizzle migrations before using the app.",
     };
   }
   return { status: 500, message };
@@ -114,7 +114,7 @@ async function ensureSeedData(db: Database) {
     .onConflictDoNothing();
 
   // Preserve IDs entered by an administrator, but backfill provider IDs that
-  // became known after an existing local D1 database had already been seeded.
+  // became known after an existing database had already been seeded.
   for (const fixture of FIXTURES) {
     if (fixture.providerMatchId) {
       await db
@@ -154,7 +154,7 @@ async function ensureSeedData(db: Database) {
     }
   }
 
-  // D1 has a conservative bound-parameter limit. Read existing IDs once and
+  // Keep inserts in small batches for conservative SQLite parameter limits.
   // insert only missing seed rows in small batches instead of sending all 108
   // screenshot options in one statement.
   const existingOfferIds = new Set(
@@ -565,7 +565,7 @@ async function lockEntry(
       ),
     ]);
   } catch (error) {
-    // Two first-time requests can race past the initial read. D1 batch is
+    // Two first-time requests can race past the initial read. The libSQL batch is
     // atomic, so a unique-entry conflict leaves exactly one complete entry.
     if (!errorChainIncludes(error, "UNIQUE constraint failed")) throw error;
     const [racedEntry] = await db
@@ -827,7 +827,7 @@ async function settleFixture(db: Database, input: SettleInput) {
   };
   try {
     // The settlement PK is the concurrency guard. It intentionally has no
-    // conflict-ignore clause: if another request wins, this entire D1 batch
+    // conflict-ignore clause: if another request wins, this entire libSQL batch
     // rolls back instead of overwriting bets/fixture with a second result.
     await db.batch([
       db.insert(settlements).values(settlementValue),

@@ -1,4 +1,3 @@
-import { env } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { apiFootballCache } from "@/db/schema";
@@ -97,9 +96,7 @@ function cacheKey(endpoint: ApiFootballEndpoint, params: URLSearchParams): strin
 }
 
 function getApiFootballKey(): string | null {
-  const workerKey = (env as unknown as { API_FOOTBALL_KEY?: string })
-    .API_FOOTBALL_KEY;
-  const key = workerKey || process.env.API_FOOTBALL_KEY;
+  const key = process.env.API_FOOTBALL_KEY;
   return key?.trim() || null;
 }
 

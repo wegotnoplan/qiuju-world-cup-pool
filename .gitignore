@@ -46,3 +46,5 @@ next-env.d.ts
 /.playwright-cli/
 /.playwright-local/
 /output/
+/.data/
+/Player/
