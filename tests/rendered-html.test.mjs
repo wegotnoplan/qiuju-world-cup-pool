@@ -146,6 +146,7 @@ test("completed fixtures open local history in a dedicated layer while the provi
   assert.match(workbench, /fixtureId=\{[\s\S]*?nextFixture\.providerMatchId/);
   assert.match(workbench, /!showNextWidget && \([\s\S]*?<LocalMatchCard fixture=\{selectedFixture\}/);
   assert.match(workbench, /data-presentation=\{mode\}/);
+  assert.match(workbench, /className="wb-main" data-selected-presentation=\{selectedMode\}/);
   assert.match(workbench, /mode === "completed" \? \([\s\S]*?className="wb-history-trigger"/);
   assert.match(workbench, /onFocus=\{\(event\) => event\.stopPropagation\(\)\}[\s\S]*?openBetHistory\(fixture\.id\)/);
   assert.match(workbench, /onClick=\{\(\) => openBetHistory\(fixture\.id\)\}/);
@@ -154,8 +155,10 @@ test("completed fixtures open local history in a dedicated layer while the provi
   assert.match(workbench, /money\(bet\.stakeCents\)[\s\S]*?bet\.odds\.toFixed\(2\)/);
   assert.match(workbench, /bet\.theoreticalPayoutCents !== bet\.payoutCents/);
   assert.match(workbench, /selectedFixture\.recordStatus === "settled"[\s\S]*?<PoolPodium/);
+  assert.match(css, /\.wb-ranking-wrap\s*\{[\s\S]*?max-height:\s*none;[\s\S]*?overflow-y:\s*visible/);
   assert.match(css, /\.wb-card-body-completed\s*\{[\s\S]*?overflow:\s*hidden/);
-  assert.match(css, /\.wb-history-trigger\s*\{[\s\S]*?min-height:\s*58px/);
+  assert.match(css, /\.wb-history-trigger\s*\{[\s\S]*?min-height:\s*44px/);
+  assert.match(css, /data-selected-presentation="completed"\][\s\S]*?flex:\s*0 0 122px/);
   assert.match(css, /\.wb-history-sheet\s*\{/);
   assert.doesNotMatch(
     css,

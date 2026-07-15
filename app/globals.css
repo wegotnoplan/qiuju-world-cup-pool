@@ -778,8 +778,9 @@ api-sports-widget[data-theme="WorldCup"] {
 }
 
 .wb-ranking-wrap {
-  max-height: 294px;
-  overflow-y: auto;
+  /* The settled table is a seven-person ledger and must remain visible in full. */
+  max-height: none;
+  overflow-y: visible;
   border-top: 1px solid oklch(1 0 0 / 0.11);
   background: oklch(0.985 0.006 92);
   color: var(--ink);
@@ -1112,11 +1113,11 @@ api-sports-widget[data-theme="WorldCup"] {
 .wb-history-trigger {
   display: grid;
   width: 100%;
-  min-height: 58px;
-  grid-template-columns: 34px minmax(0, 1fr) 18px;
+  min-height: 44px;
+  grid-template-columns: 28px minmax(0, 1fr) 16px;
   align-items: center;
-  gap: 9px;
-  padding: 7px 10px;
+  gap: 8px;
+  padding: 4px 8px;
   border: 1px solid oklch(0.61 0.09 151 / 0.38);
   border-radius: 11px;
   background: var(--pitch-soft);
@@ -1133,8 +1134,8 @@ api-sports-widget[data-theme="WorldCup"] {
 
 .wb-history-trigger-mark {
   display: grid;
-  width: 34px;
-  height: 34px;
+  width: 28px;
+  height: 28px;
   place-items: center;
   border-radius: 50%;
   background: var(--pitch);
@@ -3040,6 +3041,37 @@ api-sports-widget[data-theme="WorldCup"] {
   to { transform: translateX(-50%); }
 }
 
+@media (max-width: 699px) {
+  .wb-main[data-selected-presentation="completed"] .wb-carousel-section {
+    min-height: 0;
+    flex: 0 0 122px;
+    padding-top: 5px;
+  }
+
+  .wb-main[data-selected-presentation="completed"] .wb-carousel-heading {
+    min-height: 27px;
+    padding-bottom: 3px;
+  }
+
+  .wb-main[data-selected-presentation="completed"] .wb-fixture-track {
+    min-height: 0;
+    flex: 0 0 90px;
+  }
+
+  .wb-main[data-selected-presentation="completed"] .wb-fixture-card {
+    height: 87px;
+  }
+
+  .wb-main[data-selected-presentation="completed"] .wb-fixture-card.is-completed .wb-card-head {
+    min-height: 34px;
+    padding-block: 3px;
+  }
+
+  .wb-main[data-selected-presentation="completed"] .wb-card-body-completed {
+    padding: 3px 5px;
+  }
+}
+
 @media (min-width: 700px) {
   .wb-main {
     padding: 12px 14px 14px;
@@ -3110,10 +3142,6 @@ api-sports-widget[data-theme="WorldCup"] {
     font-size: 20px;
   }
 
-  .wb-ranking-wrap {
-    max-height: 172px;
-  }
-
   .wb-provider-bar small,
   .wb-provider-fallback > p {
     display: none;
@@ -3121,6 +3149,16 @@ api-sports-widget[data-theme="WorldCup"] {
 
   .wb-provider-widget {
     max-height: 128px;
+  }
+}
+
+@media (max-width: 699px) and (max-height: 700px) {
+  .wb-main[data-selected-presentation="completed"] .wb-carousel-section {
+    flex-basis: 95px;
+  }
+
+  .wb-main[data-selected-presentation="completed"] .wb-carousel-heading {
+    display: none;
   }
 }
 

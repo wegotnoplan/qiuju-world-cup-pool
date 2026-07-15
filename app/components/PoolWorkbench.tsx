@@ -1576,7 +1576,7 @@ export function PoolWorkbench() {
         </div>
       </header>
 
-      <main className="wb-main">
+      <main className="wb-main" data-selected-presentation={selectedMode}>
         <section className="wb-scoreboard" aria-label="当前比赛、奖池与赛果">
           <div className="wb-match-meta">
             <span>{selectedFixture.matchCode} · {STAGE_LABEL[selectedFixture.stage]}</span>
