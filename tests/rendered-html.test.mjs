@@ -167,7 +167,12 @@ test("completed fixtures open local history in a dedicated layer while the provi
   assert.match(css, /\.wb-history-sheet\s*\{/);
   assert.match(workbench, /const hasExplicitFixtureSelection = useRef\(false\)/);
   assert.match(workbench, /next\.nextFixtureId \?\?[\s\S]*?recordStatus !== "settled"/);
-  assert.match(workbench, /if \(!hasExplicitFixtureSelection\.current\)[\s\S]*?centerFixtureCard/);
+  assert.match(
+    workbench,
+    /const left = element\.offsetLeft - track\.offsetLeft - \(track\.clientWidth - element\.offsetWidth\) \/ 2;/,
+    "initial positioning should use the selected fixture's absolute track position",
+  );
+  assert.match(workbench, /useLayoutEffect\(\(\) => \{[\s\S]*?centerFixtureCard\(track, selectedFixtureId\);/);
   assert.match(workbench, /onPointerDownCapture=\{markCarouselInteraction\}/);
   assert.doesNotMatch(
     css,
