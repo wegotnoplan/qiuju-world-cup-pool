@@ -167,7 +167,11 @@ test("completed fixtures open local history in a dedicated layer while the provi
   assert.match(css, /\.wb-history-sheet\s*\{/);
   assert.match(workbench, /const hasExplicitFixtureSelection = useRef\(false\)/);
   assert.match(workbench, /next\.nextFixtureId \?\?[\s\S]*?recordStatus !== "settled"/);
-  assert.match(workbench, /if \(!hasExplicitFixtureSelection\.current\)[\s\S]*?centerFixtureCard/);
+  assert.match(
+    workbench,
+    /if \(!hasExplicitFixtureSelection\.current\) \{\s*return;\s*\}/,
+    "programmatic positioning must not recursively re-center from its own scroll event",
+  );
   assert.match(workbench, /onPointerDownCapture=\{markCarouselInteraction\}/);
   assert.doesNotMatch(
     css,

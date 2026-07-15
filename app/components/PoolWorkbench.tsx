@@ -1079,7 +1079,6 @@ export function PoolWorkbench() {
         const track = trackRef.current;
         if (!track) return;
         if (!hasExplicitFixtureSelection.current) {
-          if (selectedFixtureId) centerFixtureCard(track, selectedFixtureId);
           return;
         }
         const trackBox = track.getBoundingClientRect();
