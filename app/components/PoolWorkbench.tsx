@@ -4,6 +4,7 @@ import Image from "next/image";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -126,11 +127,9 @@ function centerFixtureCard(track: HTMLDivElement, fixtureId: string): void {
     .find((candidate) => candidate.dataset.fixtureId === fixtureId);
   if (!element) return;
 
-  const trackBox = track.getBoundingClientRect();
-  const cardBox = element.getBoundingClientRect();
-  const offset = cardBox.left + cardBox.width / 2 - (trackBox.left + trackBox.width / 2);
-  if (Math.abs(offset) < 1) return;
-  track.scrollBy({ left: offset, behavior: "auto" });
+  const left = element.offsetLeft - track.offsetLeft - (track.clientWidth - element.offsetWidth) / 2;
+  if (Math.abs(track.scrollLeft - left) < 1) return;
+  track.scrollLeft = left;
 }
 
 function shanghaiDateTime(iso: string): string {
@@ -645,7 +644,6 @@ export function PoolWorkbench() {
   const scrollFrame = useRef<number | null>(null);
   const scrollSettleTimer = useRef<number | null>(null);
   const requestedScrollFixtureId = useRef<string | null>(null);
-  const pendingProgrammaticCenterId = useRef<string | null>(null);
   const hasExplicitFixtureSelection = useRef(false);
   const stateRef = useRef(state);
   const syncInFlightRef = useRef(false);
@@ -1044,7 +1042,7 @@ export function PoolWorkbench() {
     return () => window.clearInterval(timer);
   }, [sheet]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!selectedFixtureId) return;
     if (
       didInitialScroll.current &&
@@ -1054,7 +1052,6 @@ export function PoolWorkbench() {
     if (!track) return;
     didInitialScroll.current = true;
     requestedScrollFixtureId.current = null;
-    pendingProgrammaticCenterId.current = selectedFixtureId;
     centerFixtureCard(track, selectedFixtureId);
   }, [selectedFixtureId, fixtures.length]);
 
@@ -1081,9 +1078,6 @@ export function PoolWorkbench() {
         const track = trackRef.current;
         if (!track) return;
         if (!hasExplicitFixtureSelection.current) {
-          const target = pendingProgrammaticCenterId.current;
-          pendingProgrammaticCenterId.current = null;
-          if (target) centerFixtureCard(track, target);
           return;
         }
         const trackBox = track.getBoundingClientRect();

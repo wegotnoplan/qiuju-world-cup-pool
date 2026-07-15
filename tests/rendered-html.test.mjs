@@ -169,10 +169,10 @@ test("completed fixtures open local history in a dedicated layer while the provi
   assert.match(workbench, /next\.nextFixtureId \?\?[\s\S]*?recordStatus !== "settled"/);
   assert.match(
     workbench,
-    /const target = pendingProgrammaticCenterId\.current;\s*pendingProgrammaticCenterId\.current = null;\s*if \(target\) centerFixtureCard\(track, target\);/,
-    "initial positioning should correct scroll snapping once after it settles",
+    /const left = element\.offsetLeft - track\.offsetLeft - \(track\.clientWidth - element\.offsetWidth\) \/ 2;/,
+    "initial positioning should use the selected fixture's absolute track position",
   );
-  assert.match(workbench, /pendingProgrammaticCenterId\.current = selectedFixtureId;/);
+  assert.match(workbench, /useLayoutEffect\(\(\) => \{[\s\S]*?centerFixtureCard\(track, selectedFixtureId\);/);
   assert.match(workbench, /onPointerDownCapture=\{markCarouselInteraction\}/);
   assert.doesNotMatch(
     css,
