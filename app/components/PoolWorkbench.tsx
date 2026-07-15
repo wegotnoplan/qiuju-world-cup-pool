@@ -29,6 +29,7 @@ import { PoolPodium, type PoolRankingRow } from "./PoolPodium";
 type DraftSlots = Partial<Record<ParticipantId, Array<OddsOffer | null>>>;
 type SheetName =
   | "pool"
+  | "history"
   | "people"
   | "odds"
   | "confirm"
@@ -110,6 +111,26 @@ function betSettlementLabel(bet: Bet): string {
   if (bet.status === "void") return `退 ${money(bet.payoutCents)}`;
   if (bet.status === "review_required") return "待复核";
   return "待结算";
+}
+
+function betSettlementMark(status: Bet["status"]): string {
+  if (status === "won") return "✓";
+  if (status === "lost") return "×";
+  if (status === "void") return "↩";
+  if (status === "review_required") return "!";
+  return "·";
+}
+
+function centerFixtureCard(track: HTMLDivElement, fixtureId: string): void {
+  const element = [...track.querySelectorAll<HTMLElement>("[data-fixture-id]")]
+    .find((candidate) => candidate.dataset.fixtureId === fixtureId);
+  if (!element) return;
+
+  const trackBox = track.getBoundingClientRect();
+  const cardBox = element.getBoundingClientRect();
+  const offset = cardBox.left + cardBox.width / 2 - (trackBox.left + trackBox.width / 2);
+  if (Math.abs(offset) < 1) return;
+  track.scrollBy({ left: offset, behavior: "auto" });
 }
 
 function shanghaiDateTime(iso: string): string {
@@ -591,6 +612,7 @@ function groupedOffers(offers: OddsOffer[]): Array<{ key: string; label: string;
 export function PoolWorkbench() {
   const [state, setState] = useState<AppState>(() => createSeedState());
   const [selectedFixtureId, setSelectedFixtureId] = useState<string | null>(null);
+  const [historyFixtureId, setHistoryFixtureId] = useState<string | null>(null);
   const [managedFixtureId, setManagedFixtureId] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<DraftSlots>({});
   const [sheet, setSheet] = useState<SheetName>(null);
@@ -623,6 +645,7 @@ export function PoolWorkbench() {
   const scrollFrame = useRef<number | null>(null);
   const scrollSettleTimer = useRef<number | null>(null);
   const requestedScrollFixtureId = useRef<string | null>(null);
+  const hasExplicitFixtureSelection = useRef(false);
   const stateRef = useRef(state);
   const syncInFlightRef = useRef(false);
   const lastResultSyncAtRef = useRef(0);
@@ -633,6 +656,7 @@ export function PoolWorkbench() {
   const fixtures = useMemo(() => [...state.fixtures].sort((a, b) => a.sequence - b.sequence), [state.fixtures]);
   const nextFixture = fixtures.find((fixture) => fixture.id === state.nextFixtureId) ?? null;
   const selectedFixture = fixtures.find((fixture) => fixture.id === selectedFixtureId) ?? nextFixture ?? fixtures[0] ?? null;
+  const historyFixture = fixtures.find((fixture) => fixture.id === historyFixtureId) ?? null;
   const managedFixture = fixtures.find((fixture) => fixture.id === managedFixtureId) ?? selectedFixture;
   const estimatedServerNowMs = Date.parse(state.serverTime) + Math.max(
     0,
@@ -767,6 +791,29 @@ export function PoolWorkbench() {
       );
   }, [selectedEntries, selectedFixture, state.bets, state.participants]);
 
+  const historyRows = useMemo(() => {
+    if (!historyFixture) return [];
+    return state.entries
+      .filter((entry) => entry.fixtureId === historyFixture.id)
+      .map((entry) => {
+        const participant = state.participants.find((person) => person.id === entry.participantId);
+        const bets = state.bets.filter(
+          (bet) => bet.fixtureId === historyFixture.id && bet.participantId === entry.participantId,
+        );
+        return {
+          ...entry,
+          name: participant?.name ?? entry.participantId,
+          displayOrder: participant?.displayOrder ?? 99,
+          bets,
+          payoutCents: bets.reduce((sum, bet) => sum + bet.payoutCents, 0),
+        };
+      })
+      .sort((a, b) => a.displayOrder - b.displayOrder);
+  }, [historyFixture, state.bets, state.entries, state.participants]);
+  const historyBetCount = historyRows.reduce((sum, entry) => sum + entry.bets.length, 0);
+  const historyStakeCents = historyRows.reduce((sum, entry) => sum + entry.stakeCents, 0);
+  const historyPayoutCents = historyRows.reduce((sum, entry) => sum + entry.payoutCents, 0);
+
   const activeDraftPeople = state.participants.filter((person) => (drafts[person.id]?.length ?? 0) > 0);
   const pendingEntry = pendingParticipant
     ? selectedEntries.find((entry) => entry.participantId === pendingParticipant) ?? null
@@ -809,16 +856,29 @@ export function PoolWorkbench() {
 
     const receivedAt = Date.now();
     setSelectedFixtureId((current) => {
-      const fallback = next.nextFixtureId ?? next.fixtures.at(-1)?.id ?? null;
+      const orderedFixtures = [...next.fixtures].sort((a, b) => a.sequence - b.sequence);
+      const fallback =
+        next.nextFixtureId ??
+        orderedFixtures.find((fixture) => fixture.recordStatus !== "settled")?.id ??
+        orderedFixtures.at(-1)?.id ??
+        null;
+      const currentStillExists = current
+        ? next.fixtures.some((fixture) => fixture.id === current)
+        : false;
+      const shouldFollowProgression =
+        !hasExplicitFixtureSelection.current ||
+        current === null ||
+        !currentStillExists ||
+        Boolean(
+          previousNextFixtureId &&
+          current === previousNextFixtureId &&
+          previousNextFixtureId !== next.nextFixtureId &&
+          next.nextFixtureId,
+        );
       const target =
-        current === null
+        shouldFollowProgression
           ? fallback
-          : previousNextFixtureId &&
-              current === previousNextFixtureId &&
-              previousNextFixtureId !== next.nextFixtureId &&
-              next.nextFixtureId
-            ? next.nextFixtureId
-            : current;
+          : current;
       if (target && target !== current) requestedScrollFixtureId.current = target;
       return target;
     });
@@ -990,16 +1050,10 @@ export function PoolWorkbench() {
       requestedScrollFixtureId.current !== selectedFixtureId
     ) return;
     const track = trackRef.current;
-    const element = trackRef.current?.querySelector<HTMLElement>(`[data-fixture-id="${selectedFixtureId}"]`);
-    if (!track || !element) return;
+    if (!track) return;
     didInitialScroll.current = true;
     requestedScrollFixtureId.current = null;
-    const trackBox = track.getBoundingClientRect();
-    const cardBox = element.getBoundingClientRect();
-    track.scrollBy({
-      left: cardBox.left + cardBox.width / 2 - (trackBox.left + trackBox.width / 2),
-      behavior: "auto",
-    });
+    centerFixtureCard(track, selectedFixtureId);
   }, [selectedFixtureId, fixtures.length]);
 
   useEffect(() => () => {
@@ -1024,6 +1078,10 @@ export function PoolWorkbench() {
         scrollFrame.current = null;
         const track = trackRef.current;
         if (!track) return;
+        if (!hasExplicitFixtureSelection.current) {
+          if (selectedFixtureId) centerFixtureCard(track, selectedFixtureId);
+          return;
+        }
         const trackBox = track.getBoundingClientRect();
         const center = trackBox.left + trackBox.width / 2;
         const cards = [...track.querySelectorAll<HTMLElement>("[data-fixture-id]")];
@@ -1046,6 +1104,17 @@ export function PoolWorkbench() {
   function addDraftParticipant(participantId: ParticipantId) {
     setDrafts((current) => ({ ...current, [participantId]: [null] }));
     setSheet(null);
+  }
+
+  function markCarouselInteraction() {
+    hasExplicitFixtureSelection.current = true;
+  }
+
+  function openBetHistory(fixtureId: string) {
+    hasExplicitFixtureSelection.current = true;
+    setSelectedFixtureId(fixtureId);
+    setHistoryFixtureId(fixtureId);
+    setSheet("history");
   }
 
   function openOdds(participantId: ParticipantId, slot: number) {
@@ -1410,6 +1479,7 @@ export function PoolWorkbench() {
       });
       await assertAdminResponse(response);
       const settledFixtureId = fixture.id;
+      hasExplicitFixtureSelection.current = true;
       applyState(unwrapState(await response.json()));
       requestedScrollFixtureId.current = settledFixtureId;
       setSelectedFixtureId(settledFixtureId);
@@ -1448,6 +1518,7 @@ export function PoolWorkbench() {
       });
       await assertAdminResponse(response);
       const next = unwrapState(await response.json());
+      hasExplicitFixtureSelection.current = true;
       applyState(next);
       requestedScrollFixtureId.current = fixture.id;
       setSelectedFixtureId(fixture.id);
@@ -1544,7 +1615,7 @@ export function PoolWorkbench() {
         </div>
       </header>
 
-      <main className="wb-main">
+      <main className="wb-main" data-selected-presentation={selectedMode}>
         <section className="wb-scoreboard" aria-label="当前比赛、奖池与赛果">
           <div className="wb-match-meta">
             <span>{selectedFixture.matchCode} · {STAGE_LABEL[selectedFixture.stage]}</span>
@@ -1645,7 +1716,14 @@ export function PoolWorkbench() {
             <div><h2 id="wb-carousel-title">参与卡片</h2><p>左右滑动切换比赛，上方信息同步更新</p></div>
             <div className="wb-dots" aria-label="比赛页码">{fixtures.map((fixture) => <span key={fixture.id} className={fixture.id === selectedFixture.id ? "is-current" : ""} />)}</div>
           </div>
-          <div className="wb-fixture-track" ref={trackRef} onScroll={handleTrackScroll}>
+          <div
+            className="wb-fixture-track"
+            ref={trackRef}
+            onScroll={handleTrackScroll}
+            onPointerDownCapture={markCarouselInteraction}
+            onWheelCapture={markCarouselInteraction}
+            onKeyDownCapture={markCarouselInteraction}
+          >
             {fixtures.map((fixture) => {
               const entries = state.entries.filter((entry) => entry.fixtureId === fixture.id);
               const bets = state.bets.filter((bet) => bet.fixtureId === fixture.id);
@@ -1659,103 +1737,131 @@ export function PoolWorkbench() {
                   key={fixture.id}
                   data-fixture-id={fixture.id}
                   data-presentation={mode}
-                  onFocus={() => setSelectedFixtureId(fixture.id)}
+                  onFocus={() => {
+                    if (hasExplicitFixtureSelection.current) setSelectedFixtureId(fixture.id);
+                  }}
                 >
                   <header className="wb-card-head">
                     <div><b>{fixture.homeTeam.name} vs {fixture.awayTeam.name}</b><span>{shanghaiDateTime(fixture.kickoffAt)} · {STAGE_LABEL[fixture.stage]}</span></div>
                     <span className="wb-card-lock">{active ? `${shanghaiTime(fixture.lockAt)} 锁定` : statusLabel(fixture, locallyActiveFixtureId, state.nextFixtureId)}</span>
                   </header>
-                  <div className="wb-card-body">
-                    {(entries.length > 0 || (active && activeDraftPeople.length > 0)) && (
-                      <div className="wb-entry-table-head">
-                        <span>下注人</span><span>项目</span><span>赔率</span>
-                      </div>
-                    )}
-                    {entries.filter((entry) => !(active && entry.canEdit)).map((entry) => {
-                      const participant = state.participants.find((person) => person.id === entry.participantId);
-                      const entryBets = bets.filter((bet) => bet.participantId === entry.participantId);
-                      return (
-                        <div className="wb-locked-entry" key={entry.id}>
-                          <div className="wb-entry-player">
-                            <ParticipantAvatar
-                              participantId={entry.participantId}
-                              className="wb-avatar-card"
-                            />
-                            <span>
-                              <b>{participant?.name ?? entry.participantId}</b>
-                              <small>{entry.betCount}注 · {fixture.recordStatus === "settled" ? "已结算" : "已锁定"}</small>
-                            </span>
+                  <div className={`wb-card-body${mode === "completed" ? " wb-card-body-completed" : ""}`}>
+                    {mode === "completed" ? (
+                      entries.length > 0 ? (
+                        <button
+                          className="wb-history-trigger"
+                          type="button"
+                          aria-haspopup="dialog"
+                          aria-label={`查看 ${fixture.homeTeam.name} 对 ${fixture.awayTeam.name} 的投注历史，共 ${entries.length} 人 ${bets.length} 注`}
+                          onFocus={(event) => event.stopPropagation()}
+                          onClick={() => openBetHistory(fixture.id)}
+                        >
+                          <span className="wb-history-trigger-mark" aria-hidden="true">账</span>
+                          <span>
+                            <b>查看投注历史</b>
+                            <small>
+                              {entries.length}人 · {bets.length}注 · 投入 {money(entries.reduce((sum, entry) => sum + entry.stakeCents, 0))} · 收获 {money(bets.reduce((sum, bet) => sum + bet.payoutCents, 0))}
+                            </small>
+                          </span>
+                          <strong aria-hidden="true">›</strong>
+                        </button>
+                      ) : (
+                        <div className="wb-card-empty"><span>终</span><b>{emptyCopy.title}</b><p>{emptyCopy.body}</p></div>
+                      )
+                    ) : (
+                      <>
+                        {(entries.length > 0 || (active && activeDraftPeople.length > 0)) && (
+                          <div className="wb-entry-table-head">
+                            <span>下注人</span><span>项目</span><span>赔率</span>
                           </div>
-                          <div className="wb-entry-bets">
-                            {entryBets.map((bet) => (
-                              <div className="wb-entry-bet" key={bet.id}>
+                        )}
+                        {entries.filter((entry) => !(active && entry.canEdit)).map((entry) => {
+                          const participant = state.participants.find((person) => person.id === entry.participantId);
+                          const entryBets = bets.filter((bet) => bet.participantId === entry.participantId);
+                          return (
+                            <div className="wb-locked-entry" key={entry.id}>
+                              <div className="wb-entry-player">
+                                <ParticipantAvatar
+                                  participantId={entry.participantId}
+                                  className="wb-avatar-card"
+                                />
                                 <span>
-                                  <b>{bet.label}</b>
-                                  <small>{MARKET_LABEL[offerGroup(bet.marketType)] ?? bet.marketType}</small>
-                                </span>
-                                <span className="wb-entry-bet-result">
-                                  <strong>{bet.odds.toFixed(2)}</strong>
-                                  {fixture.recordStatus === "settled" && (
-                                    <small data-status={bet.status}>{betSettlementLabel(bet)}</small>
-                                  )}
+                                  <b>{participant?.name ?? entry.participantId}</b>
+                                  <small>{entry.betCount}注 · 已锁定</small>
                                 </span>
                               </div>
-                            ))}
-                          </div>
-                        </div>
-                      );
-                    })}
-
-                    {active && activeDraftPeople.map((person) => {
-                      const slots = drafts[person.id] ?? [];
-                      const editingEntry = entries.find(
-                        (entry) => entry.participantId === person.id && entry.canEdit,
-                      );
-                      return (
-                        <div className="wb-draft" key={person.id}>
-                          <div className="wb-draft-head">
-                            <div>
-                              <ParticipantAvatar participantId={person.id} className="wb-avatar-draft" />
-                              <strong>{person.name}<span>{editingEntry ? "管理员已解锁" : "未锁定"}</span></strong>
+                              <div className="wb-entry-bets">
+                                {entryBets.map((bet) => (
+                                  <div className="wb-entry-bet" key={bet.id}>
+                                    <span>
+                                      <b>{bet.label}</b>
+                                      <small>{MARKET_LABEL[offerGroup(bet.marketType)] ?? bet.marketType}</small>
+                                    </span>
+                                    <span className="wb-entry-bet-result">
+                                      <strong>{bet.odds.toFixed(2)}</strong>
+                                      {fixture.recordStatus === "settled" && (
+                                        <small data-status={bet.status}>{betSettlementLabel(bet)}</small>
+                                      )}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
                             </div>
-                            {editingEntry ? (
-                              <span className="wb-editing-badge">原注单仍有效</span>
-                            ) : (
-                              <button type="button" onClick={() => setDrafts((current) => ({ ...current, [person.id]: [] }))}>移除</button>
-                            )}
-                          </div>
-                          <div className="wb-draft-slots">
-                            {slots.map((offer, slot) => (
-                              <button className={offer ? "has-offer" : ""} type="button" key={slot} onClick={() => openOdds(person.id, slot)}>
-                                <i>{slot + 1}</i><span>{offer ? <><b>{offer.label}</b><small>{MARKET_LABEL[offerGroup(offer.marketType)] ?? offer.marketType}</small></> : <><b>选择第{slot + 1}注</b><small>点此打开本场全部玩法</small></>}</span>{offer ? <strong>{offer.odds.toFixed(2)}</strong> : <strong>＋</strong>}
-                              </button>
-                            ))}
-                          </div>
-                          <div className="wb-draft-actions">
-                            <button
-                              type="button"
-                              disabled={slots.length <= 1}
-                              onClick={() => setDrafts((current) => ({
-                                ...current,
-                                [person.id]: (current[person.id] ?? []).slice(0, -1),
-                              }))}
-                            >
-                              － 减一注
-                            </button>
-                            <button type="button" disabled={slots.length >= 3} onClick={() => setDrafts((current) => ({ ...current, [person.id]: [...(current[person.id] ?? []), null] }))}>＋ 加一注</button>
-                            <button type="button" className="wb-lock-button" disabled={slots.some((offer) => !offer)} onClick={() => { setPendingParticipant(person.id); setSheet("confirm"); }}>{editingEntry ? "重新锁定注单" : "锁定并加入奖池"}</button>
-                          </div>
-                        </div>
-                      );
-                    })}
+                          );
+                        })}
 
-                    {active && (
-                      <button className="wb-add-person" type="button" onClick={() => setSheet("people")}>
-                        <span>＋</span><b>添加参与人</b><small>七人中选择，完成1–3注后单独锁定</small>
-                      </button>
-                    )}
-                    {!active && entries.length === 0 && (
-                      <div className="wb-card-empty"><span>{mode === "completed" ? "终" : "锁"}</span><b>{emptyCopy.title}</b><p>{emptyCopy.body}</p></div>
+                        {active && activeDraftPeople.map((person) => {
+                          const slots = drafts[person.id] ?? [];
+                          const editingEntry = entries.find(
+                            (entry) => entry.participantId === person.id && entry.canEdit,
+                          );
+                          return (
+                            <div className="wb-draft" key={person.id}>
+                              <div className="wb-draft-head">
+                                <div>
+                                  <ParticipantAvatar participantId={person.id} className="wb-avatar-draft" />
+                                  <strong>{person.name}<span>{editingEntry ? "管理员已解锁" : "未锁定"}</span></strong>
+                                </div>
+                                {editingEntry ? (
+                                  <span className="wb-editing-badge">原注单仍有效</span>
+                                ) : (
+                                  <button type="button" onClick={() => setDrafts((current) => ({ ...current, [person.id]: [] }))}>移除</button>
+                                )}
+                              </div>
+                              <div className="wb-draft-slots">
+                                {slots.map((offer, slot) => (
+                                  <button className={offer ? "has-offer" : ""} type="button" key={slot} onClick={() => openOdds(person.id, slot)}>
+                                    <i>{slot + 1}</i><span>{offer ? <><b>{offer.label}</b><small>{MARKET_LABEL[offerGroup(offer.marketType)] ?? offer.marketType}</small></> : <><b>选择第{slot + 1}注</b><small>点此打开本场全部玩法</small></>}</span>{offer ? <strong>{offer.odds.toFixed(2)}</strong> : <strong>＋</strong>}
+                                  </button>
+                                ))}
+                              </div>
+                              <div className="wb-draft-actions">
+                                <button
+                                  type="button"
+                                  disabled={slots.length <= 1}
+                                  onClick={() => setDrafts((current) => ({
+                                    ...current,
+                                    [person.id]: (current[person.id] ?? []).slice(0, -1),
+                                  }))}
+                                >
+                                  － 减一注
+                                </button>
+                                <button type="button" disabled={slots.length >= 3} onClick={() => setDrafts((current) => ({ ...current, [person.id]: [...(current[person.id] ?? []), null] }))}>＋ 加一注</button>
+                                <button type="button" className="wb-lock-button" disabled={slots.some((offer) => !offer)} onClick={() => { setPendingParticipant(person.id); setSheet("confirm"); }}>{editingEntry ? "重新锁定注单" : "锁定并加入奖池"}</button>
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        {active && (
+                          <button className="wb-add-person" type="button" onClick={() => setSheet("people")}>
+                            <span>＋</span><b>添加参与人</b><small>七人中选择，完成1–3注后单独锁定</small>
+                          </button>
+                        )}
+                        {!active && entries.length === 0 && (
+                          <div className="wb-card-empty"><span>锁</span><b>{emptyCopy.title}</b><p>{emptyCopy.body}</p></div>
+                        )}
+                      </>
                     )}
                   </div>
                 </article>
@@ -1765,6 +1871,88 @@ export function PoolWorkbench() {
         </section>
         {error && <button className="wb-error" type="button" onClick={() => setError(null)}>{error}<span>×</span></button>}
       </main>
+
+      {sheet === "history" && historyFixture && (
+        <DialogShell
+          className="wb-history-sheet"
+          title="投注历史"
+          eyebrow={historyFixture.regularTimeScore
+            ? `${historyFixture.matchCode} · ${historyFixture.homeTeam.name} ${historyFixture.regularTimeScore.home}:${historyFixture.regularTimeScore.away} ${historyFixture.awayTeam.name}`
+            : `${historyFixture.matchCode} · ${historyFixture.homeTeam.name} vs ${historyFixture.awayTeam.name}`}
+          onClose={() => setSheet(null)}
+        >
+          <div className="wb-sheet-body wb-history-body">
+            <div className="wb-history-summary" aria-label="本场投注历史汇总">
+              <div><span>参与</span><strong>{historyRows.length}人<small> · {historyBetCount}注</small></strong></div>
+              <div><span>总投入</span><strong>{money(historyStakeCents)}</strong></div>
+              <div><span>总收获</span><strong>{money(historyPayoutCents)}</strong></div>
+            </div>
+            <p className="wb-history-scope">
+              <b>90分钟结算</b>
+              <span>
+                仅常规时间与伤停补时，不含加时赛和点球大战。
+                {historyFixture.settlement && historyFixture.settlement.scaleBps < 10_000
+                  ? ` 本场中奖应返按 ${(historyFixture.settlement.scaleBps / 100).toFixed(2)}% 同比例折算。`
+                  : ""}
+              </span>
+            </p>
+            {historyRows.length > 0 ? (
+              <div className="wb-history-list">
+                {historyRows.map((entry) => (
+                  <section className="wb-history-person" key={entry.id}>
+                    <header>
+                      <span className="wb-history-person-name">
+                        <ParticipantAvatar participantId={entry.participantId} className="wb-avatar-history" />
+                        <span>
+                          <b>{entry.name}</b>
+                          <small>{entry.bets.length}注 · {shanghaiDateTime(entry.lockedAt)}锁定</small>
+                        </span>
+                      </span>
+                      <span className="wb-history-person-total">
+                        <small>投入 {money(entry.stakeCents)}</small>
+                        <strong>收获 {money(entry.payoutCents)}</strong>
+                      </span>
+                    </header>
+                    <div className="wb-history-bets">
+                      {entry.bets.map((bet, index) => (
+                        <div className="wb-history-bet" data-status={bet.status} key={bet.id}>
+                          <div className="wb-history-bet-title">
+                            <span aria-hidden="true">{index + 1}</span>
+                            <span>
+                              <b>{bet.label}</b>
+                              <small>{MARKET_LABEL[offerGroup(bet.marketType)] ?? bet.marketType}</small>
+                            </span>
+                          </div>
+                          <dl>
+                            <div><dt>投入</dt><dd>{money(bet.stakeCents)}</dd></div>
+                            <div><dt>锁定赔率</dt><dd>{bet.odds.toFixed(2)}</dd></div>
+                            <div>
+                              <dt>结算结果</dt>
+                              <dd data-status={bet.status}>
+                                <span className="wb-history-result-mark" aria-hidden="true">
+                                  {betSettlementMark(bet.status)}
+                                </span>
+                                <span>{betSettlementLabel(bet)}</span>
+                              </dd>
+                            </div>
+                          </dl>
+                          {bet.status === "won" && bet.theoreticalPayoutCents !== bet.payoutCents && (
+                            <p className="wb-history-adjustment">
+                              理论应返 {money(bet.theoreticalPayoutCents)}，按本场奖池折算后实收 {money(bet.payoutCents)}。
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            ) : (
+              <div className="wb-pool-empty"><b>本场没有投注记录</b><p>没有可供展示的已锁定注单。</p></div>
+            )}
+          </div>
+        </DialogShell>
+      )}
 
       {sheet === "pool" && (
         <DialogShell

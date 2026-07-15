@@ -667,7 +667,7 @@ export const FIXTURES: readonly SeedFixture[] = [
     kickoffAt: "2026-07-16T03:00:00+08:00",
     lockAt: "2026-07-16T01:00:00+08:00",
     resultSyncDueAt: "2026-07-16T07:00:00+08:00",
-    providerMatchId: null,
+    providerMatchId: "1586077",
     recordStatus: "scheduled",
   },
   {

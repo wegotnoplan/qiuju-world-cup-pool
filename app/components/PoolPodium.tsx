@@ -84,9 +84,6 @@ export function PoolPodium({ rows }: { rows: PoolRankingRow[] }) {
                         preserveAspectRatio="xMidYMid slice"
                         clipPath={`url(#wb-podium-avatar-${slot.rank})`}
                       />
-                      <text className="wb-podium-name" x={slot.center} y={slot.avatarY + 69} textAnchor="middle">
-                        {row.name}
-                      </text>
                       <text className="wb-podium-prize" x={slot.center} y={slot.top + slot.height - 7} textAnchor="middle">
                         收 {money(row.payout)}
                       </text>

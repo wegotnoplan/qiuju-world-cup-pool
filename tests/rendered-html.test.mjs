@@ -52,6 +52,11 @@ test("pool workbench includes avatar bets, frozen regulation score, and podium U
   assert.match(workbench, /LIVE_SYNC_INTERVAL_MS = 180_000/);
   assert.match(workbench, /fixtureInLiveSyncWindow/);
   assert.match(podium, /本场中奖榜领奖台/);
+  assert.doesNotMatch(
+    podium,
+    /wb-podium-name/,
+    "the podium should identify winners once, below the SVG rather than beneath each avatar",
+  );
   assert.match(avatarData, /\/avatars\/gao\.png/);
   assert.deepEqual(
     avatarFiles.filter((name) => name.endsWith(".png")).sort(),
@@ -120,7 +125,7 @@ test("fixture snapping and static provider widgets keep their reuse invariants",
   );
 });
 
-test("completed fixtures keep local history while the provider widget stays on the next fixture", async () => {
+test("completed fixtures open local history in a dedicated layer while the provider widget stays on the next fixture", async () => {
   const [workbench, css, stateRoute, syncRoute, schema, progression] = await Promise.all([
     readFile(new URL("../app/components/PoolWorkbench.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
@@ -141,10 +146,29 @@ test("completed fixtures keep local history while the provider widget stays on t
   assert.match(workbench, /fixtureId=\{[\s\S]*?nextFixture\.providerMatchId/);
   assert.match(workbench, /!showNextWidget && \([\s\S]*?<LocalMatchCard fixture=\{selectedFixture\}/);
   assert.match(workbench, /data-presentation=\{mode\}/);
-  assert.match(workbench, /fixture\.recordStatus === "settled" \? "已结算" : "已锁定"/);
-  assert.match(workbench, /fixture\.recordStatus === "settled" && \([\s\S]*?betSettlementLabel\(bet\)/);
+  assert.match(workbench, /className="wb-main" data-selected-presentation=\{selectedMode\}/);
+  assert.match(workbench, /mode === "completed" \? \([\s\S]*?className="wb-history-trigger"/);
+  assert.match(workbench, /onFocus=\{\(event\) => event\.stopPropagation\(\)\}[\s\S]*?openBetHistory\(fixture\.id\)/);
+  assert.match(workbench, /onClick=\{\(\) => openBetHistory\(fixture\.id\)\}/);
+  assert.match(workbench, /setHistoryFixtureId\(fixtureId\);[\s\S]*?setSheet\("history"\)/);
+  assert.match(workbench, /sheet === "history" && historyFixture[\s\S]*?betSettlementLabel\(bet\)/);
+  assert.match(workbench, /money\(bet\.stakeCents\)[\s\S]*?bet\.odds\.toFixed\(2\)/);
+  assert.match(workbench, /className="wb-history-bet" data-status=\{bet\.status\}/);
+  assert.match(workbench, /wb-history-result-mark[\s\S]*?betSettlementMark\(bet\.status\)/);
+  assert.match(css, /\.wb-history-bet\[data-status="won"\][\s\S]*?background:/);
+  assert.match(css, /\.wb-history-bet dd\[data-status="won"\][\s\S]*?var\(--pitch-deep\)/);
+  assert.match(css, /\.wb-history-bet dd\[data-status="lost"\][\s\S]*?background:/);
+  assert.match(workbench, /bet\.theoreticalPayoutCents !== bet\.payoutCents/);
   assert.match(workbench, /selectedFixture\.recordStatus === "settled"[\s\S]*?<PoolPodium/);
-  assert.match(css, /\.wb-card-body\s*\{[\s\S]*?overflow-y:\s*auto/);
+  assert.match(css, /\.wb-ranking-wrap\s*\{[\s\S]*?max-height:\s*none;[\s\S]*?overflow-y:\s*visible/);
+  assert.match(css, /\.wb-card-body-completed\s*\{[\s\S]*?overflow:\s*hidden/);
+  assert.match(css, /\.wb-history-trigger\s*\{[\s\S]*?min-height:\s*44px/);
+  assert.match(css, /data-selected-presentation="completed"\][\s\S]*?flex:\s*0 0 122px/);
+  assert.match(css, /\.wb-history-sheet\s*\{/);
+  assert.match(workbench, /const hasExplicitFixtureSelection = useRef\(false\)/);
+  assert.match(workbench, /next\.nextFixtureId \?\?[\s\S]*?recordStatus !== "settled"/);
+  assert.match(workbench, /if \(!hasExplicitFixtureSelection\.current\)[\s\S]*?centerFixtureCard/);
+  assert.match(workbench, /onPointerDownCapture=\{markCarouselInteraction\}/);
   assert.doesNotMatch(
     css,
     /\.wb-fixture-card\.is-readonly[^}]*pointer-events:\s*none/,
