@@ -39,6 +39,7 @@ type SheetName =
   | "manage"
   | "unlock-confirm"
   | "rules"
+  | "ladder"
   | null;
 
 const STAGE_LABEL: Record<Fixture["stage"], string> = {
@@ -790,6 +791,54 @@ export function PoolWorkbench() {
           a.displayOrder - b.displayOrder,
       );
   }, [selectedEntries, selectedFixture, state.bets, state.participants]);
+
+  // 天梯榜：聚合全体参与人跨场的投入 / 总收益 / 净收益。
+  // 排序：净收益 desc → 总收益 desc → 总投入 asc → displayOrder asc
+  // 并列名次以净收益为准（1224 排名法）。
+  const ladderRows = useMemo(() => {
+    const base = state.participants.map((person) => {
+      const personEntries = state.entries.filter((entry) => entry.participantId === person.id);
+      const personBets = state.bets.filter((bet) => bet.participantId === person.id);
+      const invested = personEntries.reduce((sum, entry) => sum + entry.stakeCents, 0);
+      const payout = personBets.reduce((sum, bet) => sum + bet.payoutCents, 0);
+      return {
+        id: person.id,
+        name: person.name,
+        displayOrder: person.displayOrder,
+        fixtureCount: personEntries.length,
+        betCount: personBets.length,
+        wonCount: personBets.filter((bet) => bet.status === "won").length,
+        invested,
+        payout,
+        net: payout - invested,
+      };
+    });
+    base.sort(
+      (a, b) =>
+        b.net - a.net ||
+        b.payout - a.payout ||
+        a.invested - b.invested ||
+        a.displayOrder - b.displayOrder,
+    );
+    // 1224 并列排名：净收益相等共享名次
+    let lastNet = Number.NaN;
+    let lastRank = 0;
+    return base.map((row, index) => {
+      if (row.net !== lastNet) {
+        lastRank = index + 1;
+        lastNet = row.net;
+      }
+      return { ...row, rank: lastRank };
+    });
+  }, [state.participants, state.entries, state.bets]);
+
+  const ladderTotals = useMemo(() => {
+    const invested = ladderRows.reduce((s, r) => s + r.invested, 0);
+    const payout = ladderRows.reduce((s, r) => s + r.payout, 0);
+    const betCount = ladderRows.reduce((s, r) => s + r.betCount, 0);
+    const settledFixtures = state.fixtures.filter((f) => f.recordStatus === "settled").length;
+    return { invested, payout, betCount, settledFixtures };
+  }, [ladderRows, state.fixtures]);
 
   const historyRows = useMemo(() => {
     if (!historyFixture) return [];
@@ -1635,6 +1684,7 @@ export function PoolWorkbench() {
         <div className="wb-brand"><span>球局</span><small>世界杯奖池</small></div>
         <div className="wb-top-actions">
           <button type="button" onClick={() => setSheet("rules")}>规则</button>
+          <button type="button" onClick={() => setSheet("ladder")} aria-label="查看全体历史投注与净收益天梯榜">天梯榜</button>
           <button
             type="button"
             disabled={adminBusy}
@@ -1911,6 +1961,59 @@ export function PoolWorkbench() {
         </section>
         {error && <button className="wb-error" type="button" onClick={() => setError(null)}>{error}<span>×</span></button>}
       </main>
+
+      {sheet === "ladder" && (
+        <DialogShell
+          className="wb-ladder-sheet"
+          title="天梯榜"
+          eyebrow={`已结算 ${ladderTotals.settledFixtures} 场· 全部参与人按净收益排名`}
+          onClose={() => setSheet(null)}
+        >
+          <div className="wb-sheet-body wb-history-body">
+            <div className="wb-history-summary" aria-label="天梯榜汇总">
+              <div><span>总投入</span><strong>{money(ladderTotals.invested)}<small>{ladderTotals.betCount}注</small></strong></div>
+              <div><span>总派彩</span><strong>{money(ladderTotals.payout)}</strong></div>
+              <div><span>总净盈亏</span><strong data-net={ladderTotals.payout - ladderTotals.invested >= 0 ? "pos" : "neg"}>{money(ladderTotals.payout - ladderTotals.invested)}</strong></div>
+            </div>
+            <p className="wb-history-scope">
+              <b>净收益排名</b>
+              <span>
+                按总派彩 - 总投入从高到低排序，相同净收益共享名次。
+                前三名分别以金、银、铜高亮标识。
+              </span>
+            </p>
+            <div className="wb-history-list">
+              {ladderRows.map((row) => {
+                const netStatus = row.net > 0 ? "pos" : row.net < 0 ? "neg" : "zero";
+                const highlight = row.rank <= 3 ? `top-${row.rank}` : "none";
+                return (
+                  <section
+                    className="wb-history-person wb-ladder-person-card"
+                    key={row.id}
+                    data-highlight={highlight}
+                    data-rank={row.rank}
+                  >
+                    <header>
+                      <span className="wb-history-person-name">
+                        <span className="wb-ladder-rank-badge" aria-label={`第${row.rank}名`}>{row.rank}</span>
+                        <ParticipantAvatar participantId={row.id} className="wb-avatar-history" />
+                        <span>
+                          <b>{row.name}</b>
+                          <small>{row.fixtureCount}场· {row.betCount}注 · 中{row.wonCount}</small>
+                        </span>
+                      </span>
+                      <span className="wb-history-person-total wb-ladder-person-total">
+                        <small>投入 {money(row.invested)} · 派彩 {money(row.payout)}</small>
+                        <strong data-net={netStatus}>净 {row.net > 0 ? "+" : ""}{money(row.net)}</strong>
+                      </span>
+                    </header>
+                  </section>
+                );
+              })}
+            </div>
+          </div>
+        </DialogShell>
+      )}
 
       {sheet === "history" && historyFixture && (
         <DialogShell

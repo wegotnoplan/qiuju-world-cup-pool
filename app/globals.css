@@ -1631,6 +1631,88 @@ api-sports-widget[data-theme="WorldCup"] {
   width: min(100%, 560px);
 }
 
+/* ===== 天梯榜（复用历史页卡片框架） ===== */
+.wb-ladder-sheet {
+  width: min(100%, 560px);
+}
+
+.wb-history-summary strong[data-net="pos"] {
+  color: oklch(0.55 0.14 145);
+}
+.wb-history-summary strong[data-net="neg"] {
+  color: oklch(0.55 0.16 25);
+}
+
+.wb-ladder-rank-badge {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: oklch(0.92 0.008 100);
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-ladder-person-total strong[data-net="pos"] {
+  color: oklch(0.55 0.14 145);
+}
+.wb-ladder-person-total strong[data-net="neg"] {
+  color: oklch(0.55 0.16 25);
+}
+.wb-ladder-person-total strong[data-net="zero"] {
+  color: var(--ink-soft);
+}
+
+/* 前三名金/银/铜整卡高亮 */
+.wb-history-person[data-highlight="top-1"] {
+  border-color: #c69526;
+  background: linear-gradient(160deg, #fff4c9 0%, #f5d472 55%, #e6b93a 100%);
+  box-shadow: 0 3px 10px oklch(0.72 0.15 82 / 0.45);
+}
+.wb-history-person[data-highlight="top-1"] > header {
+  background: transparent;
+  border-bottom-color: transparent;
+}
+.wb-history-person[data-highlight="top-1"] .wb-ladder-rank-badge {
+  background: #b8871f;
+  color: #fff;
+  box-shadow: 0 0 0 2px oklch(1 0 0 / 0.55);
+}
+
+.wb-history-person[data-highlight="top-2"] {
+  border-color: #8f9391;
+  background: linear-gradient(160deg, #f6f7f4 0%, #d5d8d1 55%, #b4b7b1 100%);
+  box-shadow: 0 3px 9px oklch(0.72 0.01 100 / 0.40);
+}
+.wb-history-person[data-highlight="top-2"] > header {
+  background: transparent;
+  border-bottom-color: transparent;
+}
+.wb-history-person[data-highlight="top-2"] .wb-ladder-rank-badge {
+  background: #7d807e;
+  color: #fff;
+  box-shadow: 0 0 0 2px oklch(1 0 0 / 0.55);
+}
+
+.wb-history-person[data-highlight="top-3"] {
+  border-color: #965d38;
+  background: linear-gradient(160deg, #f8e2cd 0%, #dfa679 55%, #c07d4d 100%);
+  box-shadow: 0 3px 9px oklch(0.55 0.09 55 / 0.35);
+}
+.wb-history-person[data-highlight="top-3"] > header {
+  background: transparent;
+  border-bottom-color: transparent;
+}
+.wb-history-person[data-highlight="top-3"] .wb-ladder-rank-badge {
+  background: #8e5731;
+  color: #fff;
+  box-shadow: 0 0 0 2px oklch(1 0 0 / 0.5);
+}
+
 .wb-history-body {
   padding-bottom: max(18px, calc(12px + env(safe-area-inset-bottom)));
 }
