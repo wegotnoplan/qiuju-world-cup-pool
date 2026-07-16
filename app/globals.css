@@ -778,12 +778,15 @@ api-sports-widget[data-theme="WorldCup"] {
 }
 
 .wb-ranking-wrap {
-  /* The settled table is a seven-person ledger and must remain visible in full. */
-  max-height: none;
-  overflow-y: visible;
+  /* Cap height so a large participant roster does not push the participation cards
+     (and their history-trigger button) below the viewport clip. The sticky title
+     stays pinned while the podium + remaining table scroll inside. */
+  max-height: min(320px, 40dvh);
+  overflow-y: auto;
   border-top: 1px solid oklch(1 0 0 / 0.11);
   background: oklch(0.985 0.006 92);
   color: var(--ink);
+  overscroll-behavior: contain;
 }
 
 .wb-ranking-title {

@@ -54,9 +54,7 @@ export function PoolPodium({ rows }: { rows: PoolRankingRow[] }) {
   });
   const winnerByRank = new Map(winners.map((row, index) => [index + 1, row]));
   const podiumIds = new Set(winners.map((row) => row.id));
-  const remaining = rows.filter(
-    (row) => !podiumIds.has(row.id) && !(row.invested > 0 && row.payout === 0),
-  );
+  const remaining = rows.filter((row) => !podiumIds.has(row.id));
 
   return (
     <div className="wb-podium-layout">
