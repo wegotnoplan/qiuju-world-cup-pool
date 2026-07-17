@@ -2007,7 +2007,7 @@ export function PoolWorkbench() {
                   >
                     <header>
                       <span className="wb-history-person-name">
-                        <span className="wb-ladder-rank-badge" aria-label={`第${row.rank}名`}>{row.rank}</span>
+                        <span className="wb-ladder-rank-badge" aria-label={row.idle ? "未下注，暂无排名" : `第${row.rank}名`}>{row.idle ? "×" : row.rank}</span>
                         <ParticipantAvatar participantId={row.id} className="wb-avatar-history" />
                         <span>
                           <b>{row.name}</b>
