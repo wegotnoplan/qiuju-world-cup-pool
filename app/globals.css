@@ -183,7 +183,8 @@ select:disabled {
   justify-content: space-between;
   padding: 6px max(14px, calc((100vw - 960px) / 2));
   border-bottom: 1px solid oklch(1 0 0 / 0.1);
-  background: var(--wb-green);
+  background: linear-gradient(180deg, oklch(0.35 0.086 154), var(--wb-green));
+  box-shadow: 0 1px 12px oklch(0.22 0.05 155 / 0.22);
   color: white;
 }
 
@@ -309,9 +310,36 @@ select:disabled {
   border: 1px solid oklch(1 0 0 / 0.09);
   border-radius: 18px;
   background:
+    radial-gradient(circle at 50% -45%, oklch(0.46 0.11 152 / 0.42), transparent 62%),
     linear-gradient(135deg, oklch(0.28 0.07 154), oklch(0.2 0.04 157));
   color: white;
-  box-shadow: 0 12px 35px oklch(0.22 0.04 156 / 0.18);
+  box-shadow:
+    inset 0 1px 0 oklch(1 0 0 / 0.08),
+    0 12px 35px oklch(0.22 0.04 156 / 0.18);
+}
+
+.wb-scoreboard-anim {
+  animation: wb-scoreboard-fade 220ms ease-out;
+}
+
+.wb-scoreboard-anim[data-slide-from="right"] {
+  animation-name: wb-scoreboard-in-right;
+}
+
+.wb-scoreboard-anim[data-slide-from="left"] {
+  animation-name: wb-scoreboard-in-left;
+}
+
+@keyframes wb-scoreboard-fade {
+  from { opacity: 0; }
+}
+
+@keyframes wb-scoreboard-in-right {
+  from { opacity: 0; transform: translateX(18px); }
+}
+
+@keyframes wb-scoreboard-in-left {
+  from { opacity: 0; transform: translateX(-18px); }
 }
 
 .wb-match-meta {
@@ -325,6 +353,7 @@ select:disabled {
   color: oklch(0.81 0.022 151);
   font-size: 9px;
   font-weight: 750;
+  letter-spacing: 0.04em;
 }
 
 .wb-match-meta strong {
@@ -364,53 +393,6 @@ select:disabled {
     oklch(0.235 0.052 155);
 }
 
-.wb-provider-bar {
-  display: flex;
-  min-height: 24px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 4px 10px;
-  border-bottom: 1px solid oklch(1 0 0 / 0.08);
-  background: oklch(0.14 0.025 158 / 0.42);
-  color: oklch(0.76 0.022 151);
-  font-size: 10px;
-  font-weight: 750;
-}
-
-.wb-provider-bar > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: oklch(0.91 0.026 151);
-  letter-spacing: 0.03em;
-}
-
-.wb-provider-bar i {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--gold);
-  box-shadow: 0 0 0 3px oklch(0.78 0.14 82 / 0.12);
-}
-
-.wb-provider-fallback > p {
-  display: flex;
-  min-height: 22px;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  margin: 0;
-  border-top: 1px solid oklch(1 0 0 / 0.07);
-  color: oklch(0.71 0.02 151);
-  font-size: 9px;
-  font-weight: 700;
-}
-
-.wb-provider-fallback > p span {
-  color: var(--gold);
-}
-
 .wb-provider-widget {
   min-height: 118px;
   max-height: 168px;
@@ -448,6 +430,7 @@ select:disabled {
 .wb-frozen-score-title span {
   color: oklch(0.76 0.022 151);
   font-size: 9px;
+  letter-spacing: 0.05em;
 }
 
 .wb-frozen-score-title b {
@@ -473,6 +456,7 @@ select:disabled {
 .wb-frozen-score-value span {
   color: oklch(0.73 0.02 151);
   font-size: 8px;
+  letter-spacing: 0.05em;
 }
 
 .wb-frozen-score-value strong {
@@ -664,11 +648,12 @@ api-sports-widget[data-theme="WorldCup"] {
 
 .wb-score strong {
   display: block;
-  font-size: 24px;
+  font-size: 28px;
   font-weight: 950;
   line-height: 1;
   letter-spacing: -0.04em;
   font-variant-numeric: tabular-nums;
+  text-shadow: 0 2px 10px oklch(0.1 0.03 155 / 0.45);
 }
 
 .wb-score span {
@@ -739,6 +724,7 @@ api-sports-widget[data-theme="WorldCup"] {
   display: block;
   color: oklch(0.75 0.022 151);
   font-size: 8px;
+  letter-spacing: 0.05em;
 }
 
 .wb-match-stats strong {
@@ -757,26 +743,6 @@ api-sports-widget[data-theme="WorldCup"] {
   font-size: 9px;
 }
 
-.wb-result-ticker {
-  overflow: hidden;
-  border-top: 1px solid oklch(1 0 0 / 0.1);
-  background: var(--gold);
-  color: var(--ink);
-  font-size: 9px;
-  font-weight: 850;
-  white-space: nowrap;
-}
-
-.wb-result-ticker > div {
-  display: flex;
-  width: max-content;
-  animation: wb-ticker 16s linear infinite;
-}
-
-.wb-result-ticker span {
-  padding: 5px 24px 5px 0;
-}
-
 .wb-ranking-wrap {
   /* The settled table is a seven-person ledger and must remain visible in full. */
   max-height: none;
@@ -787,9 +753,6 @@ api-sports-widget[data-theme="WorldCup"] {
 }
 
 .wb-ranking-title {
-  position: sticky;
-  z-index: 1;
-  top: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -952,7 +915,7 @@ api-sports-widget[data-theme="WorldCup"] {
 
 .wb-carousel-heading {
   display: flex;
-  min-height: 34px;
+  height: 34px;
   flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
@@ -965,6 +928,17 @@ api-sports-widget[data-theme="WorldCup"] {
   margin: 0;
   font-size: 12px;
   font-weight: 900;
+}
+
+.wb-carousel-heading h2::before {
+  display: inline-block;
+  width: 3px;
+  height: 11px;
+  margin-right: 6px;
+  border-radius: 2px;
+  background: var(--pitch);
+  content: "";
+  vertical-align: -1px;
 }
 
 .wb-carousel-heading p {
@@ -1029,11 +1003,15 @@ api-sports-widget[data-theme="WorldCup"] {
   opacity: 0.7;
   scroll-snap-align: center;
   scroll-snap-stop: always;
-  transition: opacity 160ms ease, border-color 160ms ease;
+  transform: scale(0.982);
+  transform-origin: center top;
+  transition: opacity 160ms ease, border-color 160ms ease, transform 200ms ease-out, box-shadow 200ms ease-out;
 }
 
 .wb-fixture-card.is-selected {
   opacity: 1;
+  box-shadow: 0 16px 38px oklch(0.28 0.03 155 / 0.13);
+  transform: scale(1);
 }
 
 .wb-fixture-card.is-active {
@@ -1502,12 +1480,15 @@ api-sports-widget[data-theme="WorldCup"] {
 
 .wb-card-empty span {
   display: grid;
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   place-items: center;
+  border: 1px solid oklch(0.61 0.09 151 / 0.3);
   border-radius: 50%;
-  background: var(--surface-muted);
-  font-size: 9px;
+  background: var(--pitch-soft);
+  color: var(--pitch-deep);
+  font-size: 10px;
+  font-weight: 900;
 }
 
 .wb-card-empty b {
@@ -3178,16 +3159,7 @@ api-sports-widget[data-theme="WorldCup"] {
   from { opacity: 0; transform: translateY(7px); }
 }
 
-@keyframes wb-ticker {
-  to { transform: translateX(-50%); }
-}
-
 @media (max-width: 699px) {
-  .wb-main[data-selected-presentation="completed"] .wb-carousel-heading {
-    min-height: 27px;
-    padding-bottom: 3px;
-  }
-
   .wb-main[data-selected-presentation="completed"] .wb-fixture-card.is-completed .wb-card-head {
     min-height: 34px;
     padding-block: 3px;
@@ -3264,19 +3236,8 @@ api-sports-widget[data-theme="WorldCup"] {
     font-size: 20px;
   }
 
-  .wb-provider-bar small,
-  .wb-provider-fallback > p {
-    display: none;
-  }
-
   .wb-provider-widget {
     max-height: 128px;
-  }
-}
-
-@media (max-width: 699px) and (max-height: 700px) {
-  .wb-main[data-selected-presentation="completed"] .wb-carousel-heading {
-    display: none;
   }
 }
 
@@ -3301,13 +3262,6 @@ api-sports-widget[data-theme="WorldCup"] {
 
   .wb-carousel-heading p {
     display: none;
-  }
-
-  .wb-provider-bar small {
-    overflow: hidden;
-    max-width: 44%;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .wb-frozen-score {
@@ -3340,15 +3294,5 @@ api-sports-widget[data-theme="WorldCup"] {
   .wb-avatar-card {
     width: 44px;
     height: 44px;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .wb-result-ticker > div {
-    animation: none;
-  }
-
-  .wb-result-ticker span + span {
-    display: none;
   }
 }

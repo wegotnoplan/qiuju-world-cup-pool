@@ -170,12 +170,6 @@ export function ApiSportsGameWidget({
       : fixtureId
         ? "checking"
         : "fallback";
-  const fallbackReason =
-    snapshotIsCurrent
-      ? snapshot.reason
-      : fixtureId
-        ? "正在连接官方赛况…"
-        : "比赛数据 ID 尚未开放";
 
   useEffect(() => {
     const timer = window.setInterval(() => setClockMs(Date.now()), 30_000);
@@ -271,14 +265,9 @@ export function ApiSportsGameWidget({
       role="region"
       aria-label="API-SPORTS 数据赛况"
     >
-      <div className="wb-provider-bar">
-        <span><i aria-hidden="true" />API-SPORTS 数据赛况</span>
-        <small>{liveRefresh ? "直播每3分钟刷新" : "按需加载"} · 90′赛果独立校验</small>
-      </div>
       {widgetState !== "ready" && (
         <div className="wb-provider-fallback">
           {fallback}
-          <p role="status" aria-live="polite"><span aria-hidden="true">◇</span>{fallbackReason}，已使用本地比赛卡</p>
         </div>
       )}
       <div

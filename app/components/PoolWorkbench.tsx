@@ -653,6 +653,7 @@ export function PoolWorkbench() {
   const liveSyncFixtureIdRef = useRef<string | null>(null);
   const adminPinInputRef = useRef<HTMLInputElement | null>(null);
   const editingRevisionsRef = useRef<Partial<Record<ParticipantId, number>>>({});
+  const prevSelectedFixtureIdRef = useRef<string | null>(null);
 
   const fixtures = useMemo(() => [...state.fixtures].sort((a, b) => a.sequence - b.sequence), [state.fixtures]);
   const nextFixture = fixtures.find((fixture) => fixture.id === state.nextFixtureId) ?? null;
@@ -797,13 +798,24 @@ export function PoolWorkbench() {
     return map;
   }, [fixtures, state.entries, state.bets, state.participants]);
 
+  // 仅统计完赛冻结（已结算）场次的金额，下注阶段的场次不计入天梯榜。
+  const settledFixtureIds = useMemo(
+    () =>
+      new Set(
+        state.fixtures
+          .filter((fixture) => fixture.recordStatus === "settled")
+          .map((fixture) => fixture.id),
+      ),
+    [state.fixtures],
+  );
+
   // 天梯榜：聚合全体参与人跨场的投入 / 总收益 / 净收益。
   // 排序：净收益 desc → 总收益 desc → 总投入 asc → displayOrder asc
   // 并列名次以净收益为准（1224 排名法）。
   const ladderRows = useMemo(() => {
     const base = state.participants.map((person) => {
-      const personEntries = state.entries.filter((entry) => entry.participantId === person.id);
-      const personBets = state.bets.filter((bet) => bet.participantId === person.id);
+      const personEntries = state.entries.filter((entry) => entry.participantId === person.id && settledFixtureIds.has(entry.fixtureId));
+      const personBets = state.bets.filter((bet) => bet.participantId === person.id && settledFixtureIds.has(bet.fixtureId));
       const invested = personEntries.reduce((sum, entry) => sum + entry.stakeCents, 0);
       const payout = personBets.reduce((sum, bet) => sum + bet.payoutCents, 0);
       return {
@@ -835,7 +847,7 @@ export function PoolWorkbench() {
       }
       return { ...row, rank: lastRank };
     });
-  }, [state.participants, state.entries, state.bets]);
+  }, [state.participants, state.entries, state.bets, settledFixtureIds]);
 
   const ladderTotals = useMemo(() => {
     const invested = ladderRows.reduce((s, r) => s + r.invested, 0);
@@ -957,6 +969,11 @@ export function PoolWorkbench() {
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  // 记录上一次选中的场次，用于判断记分牌过渡动画的滑入方向。
+  useEffect(() => {
+    prevSelectedFixtureIdRef.current = selectedFixture?.id ?? null;
+  }, [selectedFixture?.id]);
 
   useEffect(() => {
     const activeFixture = state.fixtures.find(
@@ -1660,28 +1677,16 @@ export function PoolWorkbench() {
     ledgerReady && nextFixture && selectedFixture.id === nextFixture.id,
   );
   const result = selectedFixture.regularTimeScore;
-  const winnerTeam = selectedFixture.winnerSide
-    ? selectedFixture.winnerSide === "home"
-      ? selectedFixture.homeTeam
-      : selectedFixture.awayTeam
-    : null;
-  const winnerAnnouncement = winnerTeam
-    ? fixtureWinnerText(selectedFixture, winnerTeam.name)
-    : "";
-  const resultOutcome = result
-    ? result.home === result.away
-      ? "平局"
-      : winnerAnnouncement ||
-        `${result.home > result.away ? selectedFixture.homeTeam.name : selectedFixture.awayTeam.name}胜`
-    : "";
-  const knockoutResolution = selectedFixture.penaltyShootoutScore
-    ? ` · 加时后 ${selectedFixture.afterExtraTimeScore?.home ?? result?.home}:${selectedFixture.afterExtraTimeScore?.away ?? result?.away} · 点球 ${selectedFixture.penaltyShootoutScore.home}:${selectedFixture.penaltyShootoutScore.away}`
-    : selectedFixture.afterExtraTimeScore
-      ? ` · 加时后 ${selectedFixture.afterExtraTimeScore.home}:${selectedFixture.afterExtraTimeScore.away}`
-      : "";
-  const tickerText = result
-    ? `90分钟赛果 · ${result.home}:${result.away} · ${resultOutcome}${knockoutResolution}${result.home === result.away && winnerAnnouncement ? ` · ${winnerAnnouncement}` : ""} · 奖池总进球 ${result.home + result.away} · 结算不含加时与点球`
-    : "";
+  const selectedIndex = fixtures.findIndex((fixture) => fixture.id === selectedFixture.id);
+  const prevSelectedIndex = prevSelectedFixtureIdRef.current
+    ? fixtures.findIndex((fixture) => fixture.id === prevSelectedFixtureIdRef.current)
+    : -1;
+  const slideFrom =
+    selectedIndex >= 0 && prevSelectedIndex >= 0 && selectedIndex !== prevSelectedIndex
+      ? selectedIndex > prevSelectedIndex
+        ? "right"
+        : "left"
+      : null;
 
   return (
     <div className="wb-app">
@@ -1703,6 +1708,7 @@ export function PoolWorkbench() {
 
       <main className="wb-main" data-selected-presentation={selectedMode}>
         <section className="wb-scoreboard" aria-label="当前比赛、奖池与赛果">
+          <div className="wb-scoreboard-anim" key={selectedFixture.id} data-slide-from={slideFrom ?? undefined}>
           <div className="wb-match-meta">
             <span>{selectedFixture.matchCode} · {STAGE_LABEL[selectedFixture.stage]}</span>
             <strong>{shanghaiDateTime(selectedFixture.kickoffAt)} 北京时间</strong>
@@ -1780,13 +1786,7 @@ export function PoolWorkbench() {
             </button>
             <div><span>{selectedFixture.settlement ? "本场滚存" : "上场滚入"}</span><strong>{money(rollover)}</strong></div>
           </div>
-
-          {result && (
-            <div className="wb-result-ticker" aria-label={tickerText}>
-              <div><span>{tickerText}</span><span aria-hidden="true">{tickerText}</span></div>
-            </div>
-          )}
-
+          </div>
         </section>
 
         <section className="wb-carousel-section" aria-labelledby="wb-carousel-title">
@@ -1987,7 +1987,6 @@ export function PoolWorkbench() {
               <b>净收益排名</b>
               <span>
                 按总派彩 - 总投入从高到低排序，相同净收益共享名次。
-                前三名分别以金、银、铜高亮标识。
               </span>
             </p>
             <div className="wb-history-list">
