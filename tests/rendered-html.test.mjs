@@ -159,11 +159,14 @@ test("completed fixtures open local history in a dedicated layer while the provi
   assert.match(css, /\.wb-history-bet dd\[data-status="won"\][\s\S]*?var\(--pitch-deep\)/);
   assert.match(css, /\.wb-history-bet dd\[data-status="lost"\][\s\S]*?background:/);
   assert.match(workbench, /bet\.theoreticalPayoutCents !== bet\.payoutCents/);
-  assert.match(workbench, /selectedFixture\.recordStatus === "settled"[\s\S]*?<PoolPodium/);
+  assert.match(workbench, /mode === "completed" \? \([\s\S]*?<PoolPodium/);
   assert.match(css, /\.wb-ranking-wrap\s*\{[\s\S]*?max-height:\s*none;[\s\S]*?overflow-y:\s*visible/);
   assert.match(css, /\.wb-card-body-completed\s*\{[\s\S]*?overflow:\s*hidden/);
   assert.match(css, /\.wb-history-trigger\s*\{[\s\S]*?min-height:\s*44px/);
-  assert.match(css, /data-selected-presentation="completed"\][\s\S]*?flex:\s*0 0 122px/);
+  assert.match(
+    css,
+    /\.wb-main\[data-selected-presentation="completed"\] \.wb-fixture-card\.is-completed \.wb-card-head\s*\{[\s\S]*?min-height:\s*34px/,
+  );
   assert.match(css, /\.wb-history-sheet\s*\{/);
   assert.match(workbench, /const hasExplicitFixtureSelection = useRef\(false\)/);
   assert.match(workbench, /next\.nextFixtureId \?\?[\s\S]*?recordStatus !== "settled"/);
@@ -383,14 +386,13 @@ test("local result cards show final scores, stage placements, and one shoot-out 
   assert.ok(primaryScoreStart >= 0 && primaryScoreEnd > primaryScoreStart);
   assert.doesNotMatch(primaryScore, /penalties|点球|<small>/);
 
-  const tickerStart = workbench.indexOf("const knockoutResolution =");
+  const tickerStart = workbench.indexOf("const scoreNote =");
   const tickerEnd = workbench.indexOf("return (", tickerStart);
   const resultTicker = workbench.slice(tickerStart, tickerEnd);
   assert.ok(tickerStart >= 0 && tickerEnd > tickerStart);
-  assert.match(resultTicker, /90分钟赛果/);
-  assert.match(resultTicker, /加时后/);
+  assert.match(resultTicker, /90分钟已结算/);
   assert.match(resultTicker, /点球/);
-  assert.match(resultTicker, /winnerAnnouncement/);
+  assert.match(resultTicker, /winnerText/);
   assert.match(workbench, /fixture\.stage === "semi_final"\) return `\$\{teamName\}晋级`/);
   assert.match(workbench, /fixture\.stage === "third_place"\) return `\$\{teamName\}获胜`/);
   assert.match(workbench, /return `\$\{teamName\}夺冠`/);

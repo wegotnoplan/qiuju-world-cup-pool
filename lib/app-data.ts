@@ -1,9 +1,10 @@
-export const APP_STATE_VERSION = 5 as const;
+export const APP_STATE_VERSION = 6 as const;
 export const STAKE_CENTS = 1_000;
 export const MAX_BETS_PER_PARTICIPANT = 3;
 export const LOCK_MINUTES_BEFORE_KICKOFF = 120;
 export const MANUAL_REVIEW_DELAY_MS = 3 * 60 * 60 * 1_000;
 export const RESULT_BASIS = "REGULATION_PLUS_STOPPAGE" as const;
+export const FINAL_FIXTURE_ID = "wc2026-m104" as const;
 export const DEFAULT_RULES_TEXT =
   "只按90分钟常规时间及伤停补时结算，不包含加时赛与点球大战。";
 
@@ -519,6 +520,53 @@ export interface PoolSummary {
   balanceCents: number;
 }
 
+export type FinalDistributionStatus =
+  | "waiting_for_m104"
+  | "ready_to_close"
+  | "closed";
+
+/** Immutable header for the terminal-pool ledger. */
+export interface FinalPoolClosure {
+  fixtureId: string;
+  ruleVersion: string;
+  participantCount: number;
+  remainingPoolCents: number;
+  performancePoolCents: number;
+  rankingPoolCents: number;
+  participationPoolCents: number;
+  distributedCents: number;
+  undistributedCents: number;
+  winnersExist: boolean;
+  closedAt: string;
+}
+
+/** Terminal bonuses are reported separately from ordinary match payouts. */
+export interface FinalPoolResult {
+  fixtureId: string;
+  participantId: ParticipantId;
+  displayOrder: number;
+  betCount: number;
+  stakeCents: number;
+  normalPayoutCents: number;
+  baseNetCents: number;
+  baseRank: number;
+  m104WinningWeight: number;
+  performanceBonusCents: number;
+  rankingBonusCents: number;
+  participationBonusCents: number;
+  bonusCents: number;
+  totalPayoutCents: number;
+  finalNetCents: number;
+  finalRank: number;
+}
+
+export interface FinalDistribution {
+  status: FinalDistributionStatus;
+  fixtureId: string;
+  closure: FinalPoolClosure | null;
+  results: FinalPoolResult[];
+}
+
 export interface AppRules {
   stakeCents: number;
   maxBetsPerParticipant: number;
@@ -542,6 +590,7 @@ export interface AppState {
   bets: Bet[];
   settlements: Settlement[];
   pool: PoolSummary;
+  finalDistribution: FinalDistribution;
   rules: AppRules;
 }
 
@@ -854,6 +903,12 @@ export function createSeedState(now = new Date().toISOString()): AppState {
     bets: [],
     settlements: [],
     pool: { contributedCents: 0, paidCents: 0, balanceCents: 0 },
+    finalDistribution: {
+      status: "waiting_for_m104",
+      fixtureId: FINAL_FIXTURE_ID,
+      closure: null,
+      results: [],
+    },
     rules: { ...APP_RULES },
   };
 }

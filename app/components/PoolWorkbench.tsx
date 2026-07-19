@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
 import {
   useCallback,
   useEffect,
@@ -1648,6 +1649,7 @@ export function PoolWorkbench() {
       <div className="wb-app wb-app-loading" aria-busy={!error}>
         <header className="wb-topbar">
           <div className="wb-brand"><span>球局</span><small>世界杯奖池</small></div>
+          <Link className="wb-final-ledger-link" href="/final">最终总账</Link>
           <span className="wb-loading-status">{error ? "读取失败" : "读取账本"}</span>
         </header>
         <main className="wb-ledger-loading-main">
@@ -1696,6 +1698,7 @@ export function PoolWorkbench() {
     <div className="wb-app">
       <header className="wb-topbar">
         <div className="wb-brand"><span>球局</span><small>世界杯奖池</small></div>
+        <Link className="wb-final-ledger-link" href="/final">最终总账</Link>
         <div className="wb-top-actions">
           <button type="button" onClick={() => setSheet("rules")}>规则</button>
           <button type="button" onClick={() => setSheet("ladder")} aria-label="查看全体历史投注与净收益天梯榜">天梯榜</button>
@@ -1788,7 +1791,16 @@ export function PoolWorkbench() {
             >
               <span>参与人数</span><strong>{selectedEntries.length}<small> / {state.participants.length}</small></strong>
             </button>
-            <div><span>{selectedFixture.settlement ? "本场滚存" : "上场滚入"}</span><strong>{money(rollover)}</strong></div>
+            <div>
+              <span>
+                {selectedFixture.matchCode === "M104" && selectedFixture.settlement
+                  ? "常规结算余款"
+                  : selectedFixture.settlement
+                    ? "本场滚存"
+                    : "上场滚入"}
+              </span>
+              <strong>{money(rollover)}</strong>
+            </div>
           </div>
           </div>
         </section>
@@ -1837,7 +1849,11 @@ export function PoolWorkbench() {
                         <div className="wb-completed-content">
                           <div className="wb-ranking-title">
                             <strong>本场排行榜</strong>
-                            <span>剩余 {money(fixtureRollover)} 滚入下一场</span>
+                            <span>
+                              {fixture.matchCode === "M104"
+                                ? `常规结算余款 ${money(fixtureRollover)}`
+                                : `剩余 ${money(fixtureRollover)} 滚入下一场`}
+                            </span>
                           </div>
                           <PoolPodium rows={fixtureLeaderboard} />
                           <button
@@ -1990,7 +2006,7 @@ export function PoolWorkbench() {
             <p className="wb-history-scope">
               <b>净收益排名</b>
               <span>
-                按总派彩 - 总投入从高到低排序，相同净收益共享名次。
+                按四场比赛的常规派彩 - 总投入从高到低排序，相同净收益共享名次；最终总账的额外分配不计入这里。
               </span>
             </p>
             <div className="wb-history-list">

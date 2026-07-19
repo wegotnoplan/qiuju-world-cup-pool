@@ -9,6 +9,7 @@ import {
 } from "@/db/schema";
 import {
   FIXTURES,
+  FINAL_FIXTURE_ID,
   gradeSelection,
   PARTICIPANTS,
   RESULT_BASIS,
@@ -29,6 +30,11 @@ import {
   FixtureProgressionError,
   planKnockoutProgression,
 } from "@/lib/fixture-progression";
+import {
+  asFinalDistributionOutcome,
+  ensureFinalDistributionForPersistedM104,
+  planFinalDistributionClosure,
+} from "@/lib/final-distribution-storage";
 
 export const dynamic = "force-dynamic";
 
@@ -406,6 +412,9 @@ async function settleFromProvider(
       existingSettlement &&
       providerSettlementRegulationMatches(existingSettlement, score)
     ) {
+      if (fixture.id === FINAL_FIXTURE_ID) {
+        await ensureFinalDistributionForPersistedM104(db);
+      }
       if (winnerSide) {
         try {
           await persistProgression(db, fixture.id, winnerSide, now);
@@ -538,6 +547,26 @@ async function settleFromProvider(
     poolSettlement.tickets.map((ticket) => [ticket.ticketId, ticket])
   );
 
+  const finalDistributionPlan =
+    fixture.id === FINAL_FIXTURE_ID
+      ? await planFinalDistributionClosure(
+          db,
+          {
+            fixtureId: FINAL_FIXTURE_ID,
+            eligiblePoolCents,
+            paidCents: poolSettlement.totalPayoutFen,
+            tickets: graded.map((item) => ({
+              ticketId: item.bet.id,
+              participantId: item.bet.participantId,
+              outcome: asFinalDistributionOutcome(item.grade),
+              payoutCents:
+                settledTicketById.get(item.bet.id)?.payoutFen ?? 0,
+            })),
+          },
+          now,
+        )
+      : null;
+
   const note =
     "API-Football明确返回常规时间结束；只读取score.fulltime作为90分钟比分，未读取goals、加时或点球比分。";
   const settlementValue = {
@@ -606,6 +635,7 @@ async function settleFromProvider(
         regularAway: score.away,
         createdAt: now,
       }),
+      ...(finalDistributionPlan?.queries ?? []),
     ] as const);
   } catch (error) {
     if (!errorChainIncludes(error, "UNIQUE constraint failed")) throw error;
@@ -621,6 +651,9 @@ async function settleFromProvider(
         message: "本场已按另一份赛果结算，自动同步不会覆盖。",
         score,
       };
+    }
+    if (fixture.id === FINAL_FIXTURE_ID) {
+      await ensureFinalDistributionForPersistedM104(db);
     }
     concurrentSettlement = existingSettlement;
   }

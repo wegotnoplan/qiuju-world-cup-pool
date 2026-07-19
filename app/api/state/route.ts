@@ -2,6 +2,8 @@ import { and, asc, eq, isNull } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   bets,
+  finalPoolClosures,
+  finalPoolResults,
   fixtureEntries,
   fixtures,
   oddsOffers,
@@ -14,6 +16,7 @@ import {
   APP_STATE_VERSION,
   DEFAULT_RULES_TEXT,
   deriveFixtureStates,
+  FINAL_FIXTURE_ID,
   FIXTURES,
   gradeSelection,
   isGradeableOddsSelection,
@@ -51,6 +54,11 @@ import {
 import { ALL_SEED_ODDS } from "@/lib/seed-odds";
 import { settlePool } from "@/lib/settlement";
 import { hasValidAdminSession } from "@/lib/admin-auth";
+import {
+  asFinalDistributionOutcome,
+  ensureFinalDistributionForPersistedM104,
+  planFinalDistributionClosure,
+} from "@/lib/final-distribution-storage";
 
 export const dynamic = "force-dynamic";
 
@@ -209,7 +217,16 @@ function asParticipantId(value: string): ParticipantId {
 
 async function loadState(db: Database, now = new Date().toISOString()): Promise<AppState> {
   await ensureSeedData(db);
-  const [participantRows, fixtureRows, offerRows, entryRows, betRows, settlementRows] =
+  const [
+    participantRows,
+    fixtureRows,
+    offerRows,
+    entryRows,
+    betRows,
+    settlementRows,
+    finalClosureRows,
+    finalResultRows,
+  ] =
     await Promise.all([
       db.select().from(participants).orderBy(asc(participants.displayOrder)),
       db.select().from(fixtures).orderBy(asc(fixtures.sequence)),
@@ -221,6 +238,16 @@ async function loadState(db: Database, now = new Date().toISOString()): Promise<
       db.select().from(fixtureEntries).orderBy(asc(fixtureEntries.lockedAt)),
       db.select().from(bets).orderBy(asc(bets.placedAt), asc(bets.id)),
       db.select().from(settlements),
+      db
+        .select()
+        .from(finalPoolClosures)
+        .where(eq(finalPoolClosures.fixtureId, FINAL_FIXTURE_ID))
+        .limit(1),
+      db
+        .select()
+        .from(finalPoolResults)
+        .where(eq(finalPoolResults.fixtureId, FINAL_FIXTURE_ID))
+        .orderBy(asc(finalPoolResults.finalRank), asc(finalPoolResults.displayOrder)),
     ]);
 
   const offersByFixture = new Map<string, OddsOffer[]>();
@@ -361,8 +388,27 @@ async function loadState(db: Database, now = new Date().toISOString()): Promise<
     revision: row.revision,
     canEdit: row.editUnlockedAt !== null && derived.activeFixtureId === row.fixtureId,
   }));
+  const finalClosureRow = finalClosureRows[0] ?? null;
+  const finalFixtureSettled = settlementRows.some(
+    (settlement) => settlement.fixtureId === FINAL_FIXTURE_ID,
+  );
+  // Self-heal a deployment where M104 was settled before the terminal-ledger
+  // migration existed. Normal waiting/closed reads stay read-only; only this
+  // one legacy state writes the immutable snapshot and then reloads it.
+  if (!finalClosureRow && finalFixtureSettled) {
+    await ensureFinalDistributionForPersistedM104(db);
+    return loadState(db, now);
+  }
+  if (
+    finalClosureRow &&
+    (finalClosureRow.participantCount < 3 ||
+      finalResultRows.length !== finalClosureRow.participantCount)
+  ) {
+    throw new Error("终局奖池封账快照不完整，请检查 final_pool_results。");
+  }
   const contributedCents = mappedBets.reduce((sum, bet) => sum + bet.stakeCents, 0);
-  const paidCents = mappedBets.reduce((sum, bet) => sum + bet.payoutCents, 0);
+  const ordinaryPaidCents = mappedBets.reduce((sum, bet) => sum + bet.payoutCents, 0);
+  const paidCents = ordinaryPaidCents + (finalClosureRow?.distributedCents ?? 0);
 
   return {
     version: APP_STATE_VERSION,
@@ -385,6 +431,52 @@ async function loadState(db: Database, now = new Date().toISOString()): Promise<
       contributedCents,
       paidCents,
       balanceCents: Math.max(0, contributedCents - paidCents),
+    },
+    finalDistribution: {
+      status: finalClosureRow
+        ? "closed"
+        : finalFixtureSettled
+          ? "ready_to_close"
+          : "waiting_for_m104",
+      fixtureId: FINAL_FIXTURE_ID,
+      closure: finalClosureRow
+        ? {
+            fixtureId: finalClosureRow.fixtureId,
+            ruleVersion: finalClosureRow.ruleVersion,
+            participantCount: finalClosureRow.participantCount,
+            remainingPoolCents: finalClosureRow.remainingPoolCents,
+            performancePoolCents: finalClosureRow.performancePoolCents,
+            rankingPoolCents: finalClosureRow.rankingPoolCents,
+            participationPoolCents: finalClosureRow.participationPoolCents,
+            distributedCents: finalClosureRow.distributedCents,
+            undistributedCents: finalClosureRow.undistributedCents,
+            winnersExist: finalClosureRow.winnersExist,
+            closedAt: finalClosureRow.closedAt,
+          }
+        : null,
+      results: finalClosureRow
+        ? finalResultRows.map((row) => ({
+            fixtureId: row.fixtureId,
+            participantId: asParticipantId(row.participantId),
+            displayOrder: row.displayOrder,
+            betCount: row.betCount,
+            stakeCents: row.stakeCents,
+            normalPayoutCents: row.normalPayoutCents,
+            baseNetCents: row.baseNetCents,
+            baseRank: row.baseRank,
+            // The immutable ledger stores the exact integer-fen claim used for
+            // apportionment. The public display uses fixed-stake odds units
+            // (3500 fen => weight 3.5) to match the pool's terminology.
+            m104WinningWeight: row.m104WinningWeight / STAKE_CENTS,
+            performanceBonusCents: row.performanceBonusCents,
+            rankingBonusCents: row.rankingBonusCents,
+            participationBonusCents: row.participationBonusCents,
+            bonusCents: row.bonusCents,
+            totalPayoutCents: row.totalPayoutCents,
+            finalNetCents: row.finalNetCents,
+            finalRank: row.finalRank,
+          }))
+        : [],
     },
     rules: { ...APP_RULES },
   };
@@ -1177,6 +1269,9 @@ async function settleFixture(db: Database, input: SettleInput) {
       .where(eq(settlements.fixtureId, fixture.id))
       .limit(1);
     if (existingSettlement && settlementMatchesInput(existingSettlement, input)) {
+      if (fixture.id === FINAL_FIXTURE_ID) {
+        await ensureFinalDistributionForPersistedM104(db);
+      }
       await persistProgression(
         db,
         fixture.id,
@@ -1308,6 +1403,26 @@ async function settleFixture(db: Database, input: SettleInput) {
     poolSettlement.tickets.map((ticket) => [ticket.ticketId, ticket])
   );
 
+  const finalDistributionPlan =
+    fixture.id === FINAL_FIXTURE_ID
+      ? await planFinalDistributionClosure(
+          db,
+          {
+            fixtureId: FINAL_FIXTURE_ID,
+            eligiblePoolCents,
+            paidCents: poolSettlement.totalPayoutFen,
+            tickets: graded.map((item) => ({
+              ticketId: item.bet.id,
+              participantId: item.bet.participantId,
+              outcome: asFinalDistributionOutcome(item.grade),
+              payoutCents:
+                settledTicketById.get(item.bet.id)?.payoutFen ?? 0,
+            })),
+          },
+          input.now,
+        )
+      : null;
+
   const settlementValue = {
     fixtureId: fixture.id,
     halfHome: halfTimeScore?.home ?? null,
@@ -1379,6 +1494,7 @@ async function settleFixture(db: Database, input: SettleInput) {
         regularAway: score.away,
         createdAt: input.now,
       }),
+      ...(finalDistributionPlan?.queries ?? []),
     ] as const);
   } catch (error) {
     if (!errorChainIncludes(error, "UNIQUE constraint failed")) throw error;
@@ -1390,6 +1506,9 @@ async function settleFixture(db: Database, input: SettleInput) {
     if (!existingSettlement) throw error;
     if (!settlementMatchesInput(existingSettlement, input)) {
       badRequest("本场已经按另一份赛果结算，不能覆盖。", 409);
+    }
+    if (fixture.id === FINAL_FIXTURE_ID) {
+      await ensureFinalDistributionForPersistedM104(db);
     }
   }
   // Financial settlement remains anchored to half-time and 90-minute scores.

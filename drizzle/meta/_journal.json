@@ -43,6 +43,13 @@
       "when": 1784048857166,
       "tag": "0005_ancient_captain_marvel",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1784462326385,
+      "tag": "0006_past_energizer",
+      "breakpoints": true
     }
   ]
 }

@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   index,
   integer,
+  primaryKey,
   real,
   sqliteTable,
   text,
@@ -165,6 +166,62 @@ export const settlements = sqliteTable("settlements", {
   note: text("note"),
   settledAt: text("settled_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+/**
+ * Immutable terminal-pool ledger. This is intentionally separate from the
+ * per-fixture settlement table: closing the pool must not make a terminal
+ * bonus look like another match payout or alter the four-match leaderboard.
+ */
+export const finalPoolClosures = sqliteTable("final_pool_closures", {
+  fixtureId: text("fixture_id")
+    .primaryKey()
+    .references(() => fixtures.id),
+  ruleVersion: text("rule_version").notNull(),
+  participantCount: integer("participant_count").notNull(),
+  remainingPoolCents: integer("remaining_pool_cents").notNull(),
+  performancePoolCents: integer("performance_pool_cents").notNull(),
+  rankingPoolCents: integer("ranking_pool_cents").notNull(),
+  participationPoolCents: integer("participation_pool_cents").notNull(),
+  distributedCents: integer("distributed_cents").notNull(),
+  undistributedCents: integer("undistributed_cents").notNull(),
+  winnersExist: integer("winners_exist", { mode: "boolean" }).notNull(),
+  closedAt: text("closed_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+/** One immutable terminal-ledger row per participant. */
+export const finalPoolResults = sqliteTable(
+  "final_pool_results",
+  {
+    fixtureId: text("fixture_id")
+      .notNull()
+      .references(() => finalPoolClosures.fixtureId),
+    participantId: text("participant_id")
+      .notNull()
+      .references(() => participants.id),
+    displayOrder: integer("display_order").notNull(),
+    betCount: integer("bet_count").notNull(),
+    stakeCents: integer("stake_cents").notNull(),
+    normalPayoutCents: integer("normal_payout_cents").notNull(),
+    baseNetCents: integer("base_net_cents").notNull(),
+    baseRank: integer("base_rank").notNull(),
+    m104WinningWeight: integer("m104_winning_weight").notNull(),
+    performanceBonusCents: integer("performance_bonus_cents").notNull(),
+    rankingBonusCents: integer("ranking_bonus_cents").notNull(),
+    participationBonusCents: integer("participation_bonus_cents").notNull(),
+    bonusCents: integer("bonus_cents").notNull(),
+    totalPayoutCents: integer("total_payout_cents").notNull(),
+    finalNetCents: integer("final_net_cents").notNull(),
+    finalRank: integer("final_rank").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.fixtureId, table.participantId] }),
+    index("final_pool_results_fixture_rank_idx").on(
+      table.fixtureId,
+      table.finalRank,
+      table.displayOrder,
+    ),
+  ],
+);
 
 export const resultAudits = sqliteTable(
   "result_audits",
