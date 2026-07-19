@@ -1,7 +1,6 @@
 "use client";
 
 import Image from "next/image";
-import Link from "next/link";
 import {
   useCallback,
   useEffect,
@@ -25,6 +24,7 @@ import {
   type ParticipantId,
 } from "@/lib/app-data";
 import { ApiSportsGameWidget } from "./ApiSportsGameWidget";
+import { FinalPoolLedger } from "./FinalPoolLedger";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { PoolPodium, type PoolRankingRow } from "./PoolPodium";
 
@@ -41,6 +41,7 @@ type SheetName =
   | "unlock-confirm"
   | "rules"
   | "ladder"
+  | "final"
   | null;
 
 const STAGE_LABEL: Record<Fixture["stage"], string> = {
@@ -1649,7 +1650,7 @@ export function PoolWorkbench() {
       <div className="wb-app wb-app-loading" aria-busy={!error}>
         <header className="wb-topbar">
           <div className="wb-brand"><span>球局</span><small>世界杯奖池</small></div>
-          <Link className="wb-final-ledger-link" href="/final">最终总账</Link>
+          <button className="wb-final-ledger-link" type="button" disabled>最终总账</button>
           <span className="wb-loading-status">{error ? "读取失败" : "读取账本"}</span>
         </header>
         <main className="wb-ledger-loading-main">
@@ -1698,7 +1699,15 @@ export function PoolWorkbench() {
     <div className="wb-app">
       <header className="wb-topbar">
         <div className="wb-brand"><span>球局</span><small>世界杯奖池</small></div>
-        <Link className="wb-final-ledger-link" href="/final">最终总账</Link>
+        <button
+          className="wb-final-ledger-link"
+          type="button"
+          onClick={() => setSheet("final")}
+          aria-haspopup="dialog"
+          aria-expanded={sheet === "final"}
+        >
+          最终总账
+        </button>
         <div className="wb-top-actions">
           <button type="button" onClick={() => setSheet("rules")}>规则</button>
           <button type="button" onClick={() => setSheet("ladder")} aria-label="查看全体历史投注与净收益天梯榜">天梯榜</button>
@@ -1989,6 +1998,17 @@ export function PoolWorkbench() {
         </section>
         {error && <button className="wb-error" type="button" onClick={() => setError(null)}>{error}<span>×</span></button>}
       </main>
+
+      {sheet === "final" && (
+        <DialogShell
+          className="wb-final-ledger-sheet"
+          title="最终总账"
+          eyebrow="下注命中与剩余池收益一目了然"
+          onClose={() => setSheet(null)}
+        >
+          <FinalPoolLedger state={state} />
+        </DialogShell>
+      )}
 
       {sheet === "ladder" && (
         <DialogShell

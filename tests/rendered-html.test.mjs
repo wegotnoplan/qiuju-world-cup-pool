@@ -35,6 +35,29 @@ test("starter preview code and dependency are removed", async () => {
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 });
 
+test("final ledger opens as a compact in-place dialog", async () => {
+  const [workbench, ledger, css] = await Promise.all([
+    readFile(new URL("../app/components/PoolWorkbench.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/FinalPoolLedger.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(workbench, /\| "final"/);
+  assert.match(workbench, /onClick=\{\(\) => setSheet\("final"\)\}/);
+  assert.match(workbench, /aria-expanded=\{sheet === "final"\}/);
+  assert.match(workbench, /sheet === "final"[\s\S]*?<DialogShell[\s\S]*?<FinalPoolLedger state=\{state\}/);
+  assert.doesNotMatch(workbench, /href="\/final"|from "next\/link"/);
+  assert.match(ledger, /下注命中派彩[\s\S]*?normalPayoutCents/);
+  assert.match(ledger, /剩余池分配[\s\S]*?bonusCents/);
+  assert.match(ledger, /总到账[\s\S]*?totalPayoutCents/);
+  assert.match(ledger, /filter\(\(row\) => row\.betCount > 0\)/);
+  assert.doesNotMatch(ledger, /三桶审计|封账依据|规则版本|previewBuckets|bucketCards/);
+  assert.match(css, /\.wb-final-ledger-sheet\s*\{[\s\S]*?720px/);
+  assert.match(css, /\.wb-final-source-split \[data-source="bet"\] b/);
+  assert.match(css, /\.wb-final-source-split \[data-source="pool"\] b/);
+  assert.doesNotMatch(css, /\.wb-final-hero|\.wb-final-bucket|\.wb-final-basis/);
+});
+
 test("pool workbench includes avatar bets, frozen regulation score, and podium UI", async () => {
   const [workbench, podium, avatarData, avatarFiles] = await Promise.all([
     readFile(new URL("../app/components/PoolWorkbench.tsx", import.meta.url), "utf8"),
